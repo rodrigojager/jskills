@@ -1,3 +1,4 @@
+pub mod exec;
 use crate::{
     controller,
     domain::{
@@ -33,6 +34,8 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Action {
+    /// Start, inspect, page, await and stop managed commands.
+    Exec(exec::Exec),
     /// Validate explicit version-1 JSON intent without creating runtime state.
     Validate { plan: PathBuf },
     /// Import an immutable plan into SQLite, under the checkout writer lock.
@@ -134,6 +137,7 @@ pub fn execute() -> Result<i32> {
         action => {
             let workspace = Workspace::resolve(&cli.root, cli.data_dir.as_deref())?;
             match action {
+                Action::Exec(exec) => exec::execute(&workspace, exec),
                 Action::Import { plan, run } => {
                     let plan = load_plan(&plan)?;
                     validation::identifier(&run)?;
