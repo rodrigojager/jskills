@@ -24,6 +24,7 @@ pub struct TaskStatus {
 
 #[derive(Debug, Serialize)]
 pub struct AttemptStatus {
+    pub review: serde_json::Value,
     pub effective_profile: serde_json::Value,
     pub id: String,
     pub process_state: String,
@@ -61,6 +62,8 @@ pub fn read(path: &Path, run: &str) -> Result<Status> {
         let attempts = attempts
             .query_map([run, &id], |r| {
                 Ok(AttemptStatus {
+                    review: crate::controller::reviews::projection(&conn, &r.get::<_, String>(0)?)
+                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?,
                     effective_profile: serde_json::from_str(&r.get::<_, String>(7)?).map_err(
                         |error| {
                             rusqlite::Error::FromSqlConversionFailure(

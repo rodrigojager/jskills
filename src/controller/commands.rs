@@ -462,6 +462,18 @@ impl Service {
         }
         Ok(())
     }
+    /// Task-local reconciliation never shuts down unrelated command admission.
+    pub fn stop_task(&mut self, store: &Store, run: &str, task: &str, reason: &str) -> Result<()> {
+        let ids = {
+            let mut q = store.conn.prepare("SELECT id FROM managed_commands WHERE run_id=?1 AND task_id=?2 AND state IN ('queued','intent','running','stopping','unknown')")?;
+            q.query_map([run, task], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for id in ids {
+            self.stop(store, &id, reason)?;
+        }
+        Ok(())
+    }
     pub fn stop_all(&mut self, store: &Store, reason: &str) -> Result<()> {
         self.shutdown = true;
         let ids: Vec<_> = self.live.keys().cloned().collect();

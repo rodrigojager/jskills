@@ -24,6 +24,7 @@ pub fn validate(plan: &Plan) -> Result<()> {
     ensure!(!plan.tasks.is_empty(), "plan must contain tasks");
     let mut tasks = HashMap::new();
     for task in &plan.tasks {
+        super::reviews::validate(task.estimate_seconds, &task.reviews)?;
         if let super::types::Executor::Profile { alias, overrides } = &task.executor {
             identifier(alias)?;
             super::profiles::validate(overrides)?;

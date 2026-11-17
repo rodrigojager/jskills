@@ -27,6 +27,10 @@ pub enum CompletionPolicy {
 #[serde(deny_unknown_fields)]
 pub struct Task {
     #[serde(default)]
+    pub estimate_seconds: Option<u64>,
+    #[serde(default)]
+    pub reviews: crate::domain::reviews::Policy,
+    #[serde(default)]
     pub recovery: crate::domain::recovery::Policy,
     /// Explicit, attributable permission for incomplete discovery, never invalidity.
     #[serde(default)]

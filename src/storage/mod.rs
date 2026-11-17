@@ -132,6 +132,7 @@ impl Store {
         crate::controller::activity::initialize(&conn)?;
         crate::controller::clock::initialize(&conn)?;
         crate::controller::due::initialize(&conn)?;
+        crate::controller::reviews::initialize(&conn)?;
         Ok(Self { conn })
     }
 
@@ -276,7 +277,9 @@ impl Store {
             params![attempt, pid],
         )?;
         crate::controller::recovery::dispatched(&tx, attempt)?;
-        crate::controller::activity::begin(&tx, attempt, crate::controller::clock::utc_ms())?;
+        let now = crate::controller::clock::utc_ms();
+        crate::controller::activity::begin(&tx, attempt, now)?;
+        crate::controller::reviews::begin(&tx, attempt, now)?;
         tx.commit()?;
         Ok(())
     }

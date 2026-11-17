@@ -34,6 +34,7 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
     let mut commands = crate::controller::commands::Service::new(workspace, &store)?;
     let mut clocks = super::clock::Clock::start(&store.conn, run, super::clock::utc_ms())?;
     super::reconcile::attempts(workspace, &mut store, run)?;
+    super::reviews::reconcile(workspace, &store, run)?;
     super::recovery::reconcile(workspace, &store, run)?;
     super::admission::reconcile(workspace, &store, run)?;
     let unknown: bool = store.conn.query_row(
@@ -58,6 +59,7 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
     let mut active: Vec<Active> = Vec::new();
     let mut stopped = false;
     let mut checker = super::due::Checker::new();
+    let mut reviews = super::reviews::Service::configured()?;
     let mut scheduling_requested = true;
     clocks.checkpoint(&store.conn, run)?;
     loop {
@@ -72,13 +74,14 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
             scheduling_requested = true;
         }
         let due_scan = checker.ready();
+        let mut queued = Vec::new();
         if due_scan {
             clocks.checkpoint(&store.conn, run)?;
             commands.check_deadlines(&store)?;
             commands.admit_queued(&store)?;
             // Queue snapshots only. Reviewer consumers admit/recheck and launch
             // asynchronously; no model or command wait belongs in this scan.
-            let _queued = checker.scan(&store.conn, run)?;
+            queued = checker.scan(&store.conn, run)?;
             super::recovery::reconcile(workspace, &store, run)?;
             scheduling_requested = true;
         }
@@ -194,6 +197,16 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
         }
         let mut retired = Vec::new();
         for current in &mut active {
+            let review_stop = super::reviews::stop_requested(&store.conn, &current.id)?;
+            if review_stop {
+                commands.stop_task(
+                    &store,
+                    run,
+                    &current.task,
+                    "execution review requested stop",
+                )?;
+                current.child.request_stop()?;
+            }
             if let Some(native) = &mut current.native {
                 native.poll(
                     &store.conn,
@@ -284,8 +297,9 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
                             exit == Some(0),
                         )?;
                     }
-                    store.retire(run, &current.task, &current.id, exit, false)?;
+                    store.retire(run, &current.task, &current.id, exit, review_stop)?;
                 }
+                super::reviews::reconcile_actions(workspace, &store, run)?;
                 super::recovery::after_retire(workspace, &store, run, &current.task, &current.id)?;
                 if !super::recovery::live_commands(&store.conn, run, &current.task)? {
                     super::admission::release(workspace, run, &current.task, &current.id)?;
@@ -298,13 +312,24 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
             scheduling_requested = true;
             clocks.checkpoint(&store.conn, run)?;
         }
+        if stopped {
+            reviews.stop_all()?;
+        }
+        let before_reviews = store.conn.total_changes();
+        reviews.poll(workspace, &store, run, &mut clocks)?;
+        if !stopped && due_scan {
+            reviews.consume(workspace, &store, run, &queued, &checker, &mut clocks)?;
+        }
+        if store.conn.total_changes() != before_reviews {
+            scheduling_requested = true;
+        }
         let operation_progress = if !stopped && scheduling_requested {
             crate::controller::operations::tick(workspace, &store, run, &mut commands)?
         } else {
             false
         };
         if stopped {
-            if commands.has_live() || !active.is_empty() {
+            if commands.has_live() || !active.is_empty() || reviews.has_live() {
                 std::thread::sleep(Duration::from_millis(10));
                 continue;
             }
@@ -409,6 +434,7 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
         if admission_checked
             && active.is_empty()
             && !commands.has_live()
+            && !reviews.has_live()
             && !operation_progress
             && !admitted
             && !super::admission::cooling_down(&store, run)?
@@ -416,7 +442,7 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
             break;
         }
         std::thread::sleep(Duration::from_millis(
-            if active.is_empty() && !commands.has_live() {
+            if active.is_empty() && !commands.has_live() && !reviews.has_live() {
                 100
             } else {
                 10

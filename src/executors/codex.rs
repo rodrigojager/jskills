@@ -62,7 +62,7 @@ pub struct Observation {
     pub failure_class: Option<String>,
 }
 
-fn command(config: &CodexConfig) -> Result<Command> {
+pub(crate) fn command(config: &CodexConfig) -> Result<Command> {
     let configured = Path::new(&config.executable);
     // Rust does not resolve a PowerShell shim the way an interactive PowerShell
     // session does. Resolve explicitly; prompts never enter a shell command.

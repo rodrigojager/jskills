@@ -61,7 +61,7 @@ pub struct Observation {
     pub result_source: Option<String>,
 }
 
-fn command(config: &ClaudeConfig) -> Result<Command> {
+pub(crate) fn command(config: &ClaudeConfig) -> Result<Command> {
     let configured = Path::new(&config.executable);
     #[cfg(windows)]
     let resolved = if configured.components().count() == 1 && configured.extension().is_none() {
