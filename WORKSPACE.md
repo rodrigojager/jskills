@@ -16,6 +16,8 @@ One row per folder (and relevant subfolder) of this repository. Keep it portable
 | `skills/codex/`, `skills/claude/`, `skills/opencode/` | derived harness instruction packages; no copied runtime core |
 | `locales/` | eleven embedded human catalogs and retained MIT translation license |
 | `scripts/skills.rs` | local deterministic skill build/parity check; never global installation |
+| `scripts/package.ps1`, `scripts/smoke.ps1` | native locked Windows/Linux archive workflow and unpacked public smoke; no publication/install |
+| `.github/workflows/` | manual native Windows/Linux packaging definitions; not executed platform evidence |
 
 ## Initial public contract
 

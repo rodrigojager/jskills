@@ -2,6 +2,48 @@
 
 An independent Rust foreground controller with versioned JSON intent, SQLite runtime state, designated task results and managed command receipts.
 
+## Native packaging and prerequisites
+
+The CLI runs as one native executable: Bun, Node, Python, external jlock and
+jproject are not core runtime dependencies. Workspace commands require Git on
+`PATH`. SQLite is compiled in through `rusqlite`'s bundled feature. Selected native
+executors and authored commands remain external programs with their own runtime,
+configuration, permissions and account requirements. The optional estimator below
+separately needs Python; it is not part of controller startup.
+
+Build with Cargo and a native C toolchain (MSVC/Windows SDK on Windows, a C
+compiler/linker on Linux). The declared Rust minimum is 1.89; local packaging
+verification uses Rust/Cargo 1.99.1 and does not prove the minimum works.
+PowerShell 7 and native archive tools are build/package workflow prerequisites,
+not CLI runtime dependencies. Choose output paths outside this checkout:
+
+```powershell
+pwsh -File scripts/package.ps1 -TargetDir ../_work/00-tmp/build -OutputDir ../_work/00-tmp/package
+```
+
+The script builds `--locked --release`, statically links the Windows C runtime,
+creates a native ZIP (Windows) or tar.gz (Linux), its SHA-256 file, dependency
+licenses/versions, build metadata and a local Cargo `.crate` source archive.
+The binary archive includes local skill packages; using them does not install
+globals. Existing output packages are refused. Cargo source packaging uses
+`--no-verify` because the optimized binary was built separately; it does not claim
+an extracted-source rebuild. No script publishes or installs anything.
+
+Unpack the actual archive and invoke `scripts/smoke.ps1` with `-Binary`, `-Root`
+(an existing Git checkout) and a new `-FixtureDir` outside the checkout. Its PATH
+contains Git and essential OS tools only: it rejects Bun, Node, Python, native
+harnesses, jlock and jproject before validating/importing/completing two dependent
+fixture tasks, rerunning without another attempt, and reading status/watch/doctor.
+This is public native execution evidence, not a provider/account smoke.
+
+`.github/workflows/package.yml` defines a manual Windows/Linux native packaging
+matrix. A workflow definition is not an executed Linux build or hosted CI result.
+Local Windows evidence, missing Linux execution and missing real-account and
+external jlock/jproject consumer checks must be distinguished before claiming
+release readiness. Rust target libraries alone do not supply a Linux C linker or
+runtime. Publication, installation and ecosystem consumer changes require separate
+authorization.
+
 ## Getting started
 
 Validate and preview a plan before importing it, then run its foreground controller:
