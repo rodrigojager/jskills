@@ -8,6 +8,9 @@ pub struct Status {
     pub run: String,
     pub state: String,
     pub complete: bool,
+    pub development_complete: bool,
+    pub verification_complete: bool,
+    pub operations: Vec<crate::controller::operations::OperationStatus>,
     pub tasks: Vec<TaskStatus>,
 }
 
@@ -72,11 +75,24 @@ pub fn read(path: &Path, run: &str) -> Result<Status> {
             attempts,
         });
     }
-    let complete = !tasks.is_empty() && tasks.iter().all(|t| t.state == "completed");
+    let operations = crate::controller::operations::read(&conn, run)?;
+    let development_complete = !tasks.is_empty()
+        && tasks
+            .iter()
+            .all(|t| matches!(t.state.as_str(), "completed" | "verification_pending"));
+    let verification_complete = operations
+        .iter()
+        .filter(|op| op.required)
+        .all(|op| op.state == "passed");
+    let complete =
+        !tasks.is_empty() && tasks.iter().all(|t| t.state == "completed") && verification_complete;
     Ok(Status {
         run: run.to_owned(),
         state,
         complete,
+        development_complete,
+        verification_complete,
+        operations,
         tasks,
     })
 }

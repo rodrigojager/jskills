@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 pub struct Plan {
     pub schema_version: u32,
     pub completion: CompletionPolicy,
+    pub operation_placement: crate::domain::operations::Placement,
+    #[serde(default)]
+    pub operations: Vec<crate::domain::operations::Operation>,
     #[serde(default)]
     pub context: crate::domain::tickets::TicketContext,
     pub tasks: Vec<Task>,

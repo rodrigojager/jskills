@@ -149,6 +149,9 @@ impl Store {
                 params![run, task.id, ordinal as i64, serde_json::to_string(task)?],
             )?;
         }
+        for (ordinal, operation) in plan.operations.iter().enumerate() {
+            tx.execute("INSERT INTO operations(run_id,id,ordinal,spec,required,revision,state,request_id) VALUES(?1,?2,?3,?4,?5,?6,'pending',?7)", params![run, operation.id, ordinal as i64, serde_json::to_string(operation)?, operation.required, operation.revision, format!("operation-{}", uuid::Uuid::new_v4())])?;
+        }
         tx.execute(
             "INSERT INTO journal(run_id,event,detail) VALUES(?1,'imported',?2)",
             params![run, "explicit judgment completion policy"],
@@ -201,6 +204,7 @@ impl Store {
                 .depends_on
                 .iter()
                 .all(|dep| states.get(dep.as_str()) == Some(&"completed"))
+                && crate::controller::operations::task_ready(self, run, &task.id)?
             {
                 return Ok(Some(task));
             }
@@ -310,11 +314,21 @@ impl Store {
             "UPDATE attempts SET state=?2,exit_code=?3 WHERE id=?1",
             params![attempt, state, exit],
         )?;
-        let task_state = outcome.as_deref().unwrap_or(if interrupted {
+        let mut task_state = outcome.as_deref().unwrap_or(if interrupted {
             "interrupted"
         } else {
             "needs_intervention"
         });
+        let plan: String =
+            tx.query_row("SELECT plan FROM runs WHERE id=?1", [run], |r| r.get(0))?;
+        let plan: Plan = serde_json::from_str(&plan)?;
+        if task_state == "completed"
+            && crate::domain::operations::task_checks(&plan, task)
+                .next()
+                .is_some()
+        {
+            task_state = "verification_pending";
+        }
         tx.execute(
             "UPDATE tasks SET state=?3 WHERE run_id=?1 AND id=?2",
             [run, task, task_state],

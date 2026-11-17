@@ -183,7 +183,7 @@ impl Service {
             }
         }
     }
-    fn start(&mut self, store: &Store, spec: CommandSpec) -> Result<Value> {
+    pub(crate) fn start(&mut self, store: &Store, spec: CommandSpec) -> Result<Value> {
         ensure!(!self.shutdown, "command controller is shutting down");
         let serialized = serde_json::to_string(&spec)?;
         let previous: Option<(String, String)> = store

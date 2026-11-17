@@ -54,6 +54,7 @@ pub fn validate(plan: &Plan) -> Result<()> {
     for task in &plan.tasks {
         visit(task, &tasks, &mut visiting, &mut visited)?;
     }
+    super::operations::validate(plan)?;
     Ok(())
 }
 

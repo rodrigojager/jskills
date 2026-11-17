@@ -52,7 +52,7 @@ impl Fixture {
         let path = self.root.join("plan.json");
         fs::write(
             &path,
-            serde_json::to_vec(&json!({"schema_version":1,"completion":"judgment","tasks":tasks}))
+            serde_json::to_vec(&json!({"schema_version":1,"completion":"judgment","operation_placement":"none","tasks":tasks}))
                 .unwrap(),
         )
         .unwrap();

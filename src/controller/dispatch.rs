@@ -133,6 +133,11 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
                 active = None;
             }
         }
+        let operation_progress = if !stopped {
+            crate::controller::operations::tick(workspace, &store, run, &mut commands)?
+        } else {
+            false
+        };
         if active.is_none() {
             if stopped {
                 if commands.has_live() {
@@ -142,7 +147,7 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
                 break;
             }
             let Some(task) = store.ready(run)? else {
-                if commands.has_live() {
+                if commands.has_live() || operation_progress {
                     std::thread::sleep(Duration::from_millis(10));
                     continue;
                 }
@@ -182,6 +187,7 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
         }
         std::thread::sleep(Duration::from_millis(10));
     }
+    crate::controller::operations::reconcile(&store, run)?;
     let snapshot = status::read(&workspace.database(), run)?;
     let state = if stopped {
         "stopped"

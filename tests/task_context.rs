@@ -33,7 +33,7 @@ fn launched_retry_gets_common_context_and_only_its_own_recorded_facts() {
     let f = Fixture::new();
     let mut a = task("A", &[], "completed", "new result");
     a["context"] = json!({"brief":"Current task brief", "requirements":["Keep preserved edits"],"dependency_artifacts":["design/schema.json"],"operations":["cargo check after edits"],"configuration":["mode=judgment"],"limits":["one attempt"],"resources":["src/module.rs"]});
-    let mut plan = json!({"schema_version":1,"completion":"judgment","context":{"brief":"Original common project brief","references":["spec.json"]},"tasks":[a,task("B", &[], "completed", "B result")]});
+    let mut plan = json!({"schema_version":1,"completion":"judgment","operation_placement":"none","context":{"brief":"Original common project brief","references":["spec.json"]},"tasks":[a,task("B", &[], "completed", "B result")]});
     let plan_path = f.root.join("plan.json");
     fs::write(&plan_path, serde_json::to_vec(&plan).unwrap()).unwrap();
     assert!(

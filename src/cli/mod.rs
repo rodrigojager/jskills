@@ -1,4 +1,5 @@
 pub mod exec;
+pub mod operations;
 use crate::{
     controller,
     domain::{
@@ -34,6 +35,8 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Action {
+    /// Preview declared operation placement or read its durable outcomes.
+    Operations(operations::Operations),
     /// Start, inspect, page, await and stop managed commands.
     Exec(exec::Exec),
     /// Validate explicit version-1 JSON intent without creating runtime state.
@@ -98,7 +101,7 @@ pub fn execute() -> Result<i32> {
             let plan = load_plan(&plan)?;
             println!(
                 "{}",
-                serde_json::json!({"valid":true,"tasks":plan.tasks.len()})
+                serde_json::json!({"valid":true,"tasks":plan.tasks.len(),"operations":plan.operations.len(),"operation_placement":plan.operation_placement})
             );
             Ok(0)
         }
@@ -138,6 +141,7 @@ pub fn execute() -> Result<i32> {
             let workspace = Workspace::resolve(&cli.root, cli.data_dir.as_deref())?;
             match action {
                 Action::Exec(exec) => exec::execute(&workspace, exec),
+                Action::Operations(operations) => operations::execute(&workspace, operations),
                 Action::Import { plan, run } => {
                     let plan = load_plan(&plan)?;
                     validation::identifier(&run)?;
