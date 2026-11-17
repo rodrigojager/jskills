@@ -1,14 +1,15 @@
 use crate::{
     execution::launch,
-    read::status,
+    read::{status, terminal},
     storage::{Store, Workspace},
     transport::{self, ControlEndpoint, Request, Response},
 };
 use anyhow::{Context, Result, ensure};
 use std::{
     fs,
+    io::{self, IsTerminal},
     net::{TcpListener, TcpStream},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 struct Active {
@@ -28,6 +29,15 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
 }
 
 pub fn run_with_autonomy(workspace: &Workspace, run: &str, restricted: bool) -> Result<i32> {
+    run_with_panel(workspace, run, restricted, false)
+}
+
+pub fn run_with_panel(
+    workspace: &Workspace,
+    run: &str,
+    restricted: bool,
+    show_panel: bool,
+) -> Result<i32> {
     let mut owner = super::lifetime::Owner::acquire(workspace, run)?;
     ensure!(
         workspace.database().is_file(),
@@ -63,6 +73,11 @@ pub fn run_with_autonomy(workspace: &Workspace, run: &str, restricted: bool) -> 
     write_endpoint(workspace, &endpoint)?;
     owner.endpoint(endpoint.endpoint)?;
     store.set_run_state(run, "running")?;
+    let mut dashboard = crate::read::web::Server::bind(workspace, run)?;
+    let dashboard_url = dashboard.url();
+    let mut panel =
+        show_panel.then(|| terminal::Panel::new(io::stderr(), io::stderr().is_terminal(), false));
+    let mut next_panel = Instant::now();
     let mut active: Vec<Active> = Vec::new();
     let mut stopped = false;
     let mut checker = super::due::Checker::new();
@@ -70,6 +85,19 @@ pub fn run_with_autonomy(workspace: &Workspace, run: &str, restricted: bool) -> 
     let mut scheduling_requested = true;
     clocks.checkpoint(&store.conn, run)?;
     loop {
+        dashboard.poll()?;
+        if Instant::now() >= next_panel {
+            if let Some(display) = &mut panel {
+                // A disconnected monitoring sink never shuts down the controller.
+                match terminal::snapshot(workspace, run)
+                    .and_then(|value| Ok(display.update(&value, Some(&dashboard_url), false)?))
+                {
+                    Ok(_) => {}
+                    Err(_) => panel = None,
+                }
+            }
+            next_panel = Instant::now() + Duration::from_millis(500);
+        }
         stopped |= super::lifetime::interrupted();
         if stopped {
             commands.stop_all(&store, "controller stopped")?;
@@ -525,9 +553,20 @@ pub fn run_with_autonomy(workspace: &Workspace, run: &str, restricted: bool) -> 
         "incomplete"
     };
     store.set_run_state(run, state)?;
+    if let Some(display) = &mut panel {
+        if let Ok(value) = terminal::snapshot(workspace, run) {
+            let _ = display.update(&value, Some(&dashboard_url), true);
+        }
+    }
     println!(
         "{}",
-        serde_json::to_string(&status::read(&workspace.database(), run)?)?
+        serde_json::to_string(&crate::read::projections::read(
+            workspace,
+            &crate::read::projections::Request::new(
+                crate::read::projections::View::Status,
+                Some(run)
+            )
+        )?)?
     );
     Ok(if snapshot.complete && !stopped { 0 } else { 3 })
 }

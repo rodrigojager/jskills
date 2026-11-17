@@ -10,6 +10,7 @@ pub mod questions;
 pub mod read;
 pub mod resources;
 pub mod retry;
+pub mod watch;
 use crate::{
     controller,
     domain::{
@@ -48,6 +49,8 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Action {
+    /// Watch persisted progress without scheduling or control capabilities.
+    Watch(watch::Watch),
     /// Consume the versioned read contract used by CLI, terminal and HTTP.
     Read(read::Read),
     Runs(read::Page),
@@ -204,6 +207,7 @@ pub fn execute() -> Result<i32> {
             let workspace = Workspace::resolve(&cli.root, cli.data_dir.as_deref())?;
             match action {
                 Action::Read(args) => read::execute(&workspace, args),
+                Action::Watch(args) => watch::execute(&workspace, args, cli.json),
                 Action::Runs(args) => read::print(&workspace, &args.request(View::Runs)),
                 Action::Tasks(args) => read::print(&workspace, &args.request(View::Tasks)),
                 Action::Task(args) => read::entity(&workspace, args, View::Task),
@@ -238,7 +242,7 @@ pub fn execute() -> Result<i32> {
                     Ok(0)
                 }
                 Action::Run { run, restricted } => {
-                    controller::dispatch::run_with_autonomy(&workspace, &run, restricted)
+                    controller::dispatch::run_with_panel(&workspace, &run, restricted, !cli.json)
                 }
                 Action::Status { run } => {
                     read::print(&workspace, &ReadRequest::new(View::Status, Some(&run)))
