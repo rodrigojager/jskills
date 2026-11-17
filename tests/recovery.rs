@@ -191,13 +191,10 @@ fn definite_task_prelaunch_failure_preserves_independent_active_worker() {
 
 fn synthetic() -> (Fixture, jtasks::storage::Workspace, jtasks::storage::Store) {
     let f = Fixture::new();
-    let workspace = jtasks::storage::Workspace {
-        checkout: f.root.clone(),
-        git_dir: f.root.join(".git"),
-        data: f.data.clone(),
-    };
+    let workspace = jtasks::storage::Workspace::resolve(&f.root, Some(&f.data)).unwrap();
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch(jtasks::storage::schema::SQL).unwrap();
+    jtasks::controller::graph::initialize(&conn).unwrap();
     jtasks::controller::recovery::initialize(&conn).unwrap();
     let mut store = jtasks::storage::Store { conn };
     let plan=serde_json::from_value(json!({"schema_version":1,"completion":"judgment","operation_placement":"none","tasks":[task("A",&[],"silent","")]})).unwrap();
@@ -384,7 +381,13 @@ fn reading_preledger_schema_three_reports_unavailable_without_initializing() {
     let plan = json!({"schema_version":1,"completion":"judgment","operation_placement":"task","tasks":[task.clone()],"operations":[operation.clone()]});
     conn.execute(
         "INSERT INTO runs(id,checkout,plan,state) VALUES('demo',?1,?2,'ready')",
-        rusqlite::params![f.root.to_string_lossy(), plan.to_string()],
+        rusqlite::params![
+            jtasks::storage::Workspace::resolve(&f.root, Some(&f.data))
+                .unwrap()
+                .checkout
+                .to_string_lossy(),
+            plan.to_string()
+        ],
     )
     .unwrap();
     conn.execute(

@@ -485,6 +485,65 @@ fn native_infrastructure_failures_are_counted_and_retry_only_once() {
     assert_eq!(deadlines.len(), 2);
     assert_eq!(deadlines[0], deadlines[1]);
 }
+
+#[test]
+fn claude_observer_protocol_is_fresh_bounded_and_retires_without_worker_authority() {
+    let f = Fixture::new();
+    let path = f.root.join("claude-observer.py");
+    fs::write(&path, r#"import sys,json,pathlib,os
+args=sys.argv[1:];sys.stdin.read()
+pathlib.Path('claude-observer-args.json').write_text(json.dumps(args))
+pathlib.Path('claude-observer-env.json').write_text(json.dumps([k for k in os.environ if k.startswith('JTASKS_')]))
+schema=json.loads(args[args.index('--json-schema')+1]);p=schema['properties'];result={k:p[k]['const'] for k in ['run','task','attempt','review','generation']}
+result.update(decision='continue',rationale='Current capture and diff inspected',evidence=['commands','diff'],delay_cause='Finite extension would permit the check to complete',next_review_after_seconds=1)
+session=args[args.index('--session-id')+1]
+print(json.dumps({'type':'system','subtype':'init','session_id':session,'permissionMode':'dontAsk'}),flush=True)
+print(json.dumps({'type':'result','subtype':'success','session_id':session,'is_error':False,'structured_output':result}),flush=True)
+"#).unwrap();
+    let mut a = configured(&f, "continue", 1);
+    a["reviews"]["observer"] =
+        json!({"kind":"claude","executable":"python","launcher_args":[path]});
+    f.import(json!([
+        a,
+        task("B", &[], "completed", "Unrelated work finishes")
+    ]));
+    let mut child = start(&f);
+    assert_eq!(finish(&mut child).code(), Some(3));
+    let status = f.snapshot();
+    assert_eq!(
+        status["tasks"][0]["attempts"][0]["review"]["actual_calls"],
+        1
+    );
+    assert_eq!(status["tasks"][0]["state"], "needs_intervention");
+    assert_eq!(status["tasks"][1]["state"], "completed");
+    let args: Vec<String> =
+        serde_json::from_slice(&fs::read(f.root.join("claude-observer-args.json")).unwrap())
+            .unwrap();
+    assert!(args.windows(2).any(|w| w == ["--tools", ""]));
+    assert!(
+        args.windows(2)
+            .any(|w| w == ["--permission-mode", "dontAsk"])
+    );
+    assert!(args.iter().any(|v| v == "--strict-mcp-config"));
+    assert!(!args.iter().any(|v| v == "--resume" || v.contains("bypass")));
+    assert_eq!(
+        fs::read_to_string(f.root.join("claude-observer-env.json")).unwrap(),
+        "[]"
+    );
+    let c = db(&f);
+    let id: String = c
+        .query_row("SELECT id FROM reviewer_calls", [], |r| r.get(0))
+        .unwrap();
+    let dir = f.data.join("reviews").join(id);
+    let custody: Value =
+        serde_json::from_slice(&fs::read(dir.join("custody.json")).unwrap()).unwrap();
+    assert_eq!(custody["empty"], true);
+    assert!(
+        fs::read_to_string(dir.join("stdout.log"))
+            .unwrap()
+            .contains("structured_output")
+    );
+}
 #[test]
 fn finite_reviewer_deadline_stops_its_scope_then_worker() {
     let f = Fixture::new();

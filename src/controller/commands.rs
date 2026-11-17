@@ -351,7 +351,21 @@ impl Service {
             &self.workspace,
             self.resource_owner(&spec, id),
             &format!("command-{id}"),
-        )
+        )?;
+        if let (Some(task), Some(attempt)) = (&spec.task, &spec.attempt) {
+            let retired: bool = store.conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM attempts WHERE id=?1 AND run_id=?2 AND task_id=?3 AND state IN ('retired','interrupted'))",
+                [attempt, &spec.run, task],
+                |r| r.get(0),
+            )?;
+            // A surviving command retains its worker's reservation. Release
+            // that exact hold only after the worker and every owned command
+            // are known retired; a live or uncertain scope keeps the hold.
+            if retired && !super::recovery::live_commands(&store.conn, &spec.run, task)? {
+                super::admission::release(&self.workspace, &spec.run, task, attempt)?;
+            }
+        }
+        Ok(())
     }
     pub fn admit_queued(&mut self, store: &Store) -> Result<()> {
         if self.shutdown || super::lifetime::interrupted() {

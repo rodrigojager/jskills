@@ -45,7 +45,7 @@ fn setup(mode: &str) -> Fixture {
     let f = Fixture::new();
     let script = f.root.join("substitute.py");
     fs::write(&script, SUBSTITUTE).unwrap();
-    f.import(json!([{"id":"T01","title":"Direct Claude", "executor":{
+    f.import_native_substitute(json!([{"id":"T01","title":"Direct Claude", "executor":{
         "kind":"claude","executable":"python","launcher_args":[script,mode],
         "prompt":"literal ; $(Write-Output INJECTED) `echo wrong` \"quotes\"\nUnicode: 日本語",
         "model":"selected-model","provider":"anthropic","effort":"high","native_agent":"native-reviewer"
@@ -72,20 +72,20 @@ fn read(path: impl AsRef<std::path::Path>) -> Value {
 
 #[test]
 fn public_cli_launches_native_flags_with_literal_stdin_and_preserves_raw_chunks() {
-    let f = setup("partial");
+    let f = setup("valid");
     let status = run(&f);
     assert_eq!(status["complete"], true, "{status}");
     let dir = dir(&f, &status);
     let observation = read(dir.join("claude-observation.json"));
     assert_eq!(observation["unknown_records"], 1);
-    assert_eq!(observation["invalid_records"], 1);
+    assert_eq!(observation["invalid_records"], 0);
     assert_eq!(observation["activity_records"], 3);
     assert_eq!(observation["native_model"], "native-resolved-model");
     assert_eq!(observation["result_source"], "native_structured_output");
     assert!(
         fs::read_to_string(dir.join("stdout.log"))
             .unwrap()
-            .ends_with("{\"unfinished\":")
+            .contains("future.event")
     );
     assert_eq!(
         fs::read_to_string(dir.join("stderr.log")).unwrap(),
@@ -130,23 +130,41 @@ fn public_cli_launches_native_flags_with_literal_stdin_and_preserves_raw_chunks(
 }
 
 #[test]
+fn incomplete_tail_retains_raw_bytes_and_rejects_native_acceptance() {
+    let f = setup("partial");
+    let status = run(&f);
+    assert_eq!(status["complete"], false);
+    assert_eq!(status["tasks"][0]["state"], "retry_exhausted");
+    let path = dir(&f, &status);
+    let observation: Value =
+        serde_json::from_slice(&fs::read(path.join("claude-observation.json")).unwrap()).unwrap();
+    assert_eq!(observation["invalid_records"], 1);
+    assert!(observation["protocol_error"].is_string());
+    assert!(
+        fs::read_to_string(path.join("stdout.log"))
+            .unwrap()
+            .ends_with("{\"unfinished\":")
+    );
+}
+
+#[test]
 fn only_root_structured_result_or_scoped_client_can_complete() {
     for (mode, completed, state) in [
-        ("helper", false, "needs_intervention"),
-        ("missing", false, "needs_intervention"),
-        ("prose", false, "needs_intervention"),
-        ("noterminal", false, "needs_intervention"),
+        ("helper", false, "retry_exhausted"),
+        ("missing", false, "retry_exhausted"),
+        ("prose", false, "retry_exhausted"),
+        ("noterminal", false, "retry_exhausted"),
         ("client", true, "completed"),
         ("client-prose", true, "completed"),
         ("same", true, "completed"),
-        ("conflict", false, "failed"),
-        ("invalid", false, "failed"),
-        ("identity", false, "failed"),
-        ("empty", false, "failed"),
-        ("error", false, "failed"),
-        ("session", false, "failed"),
-        ("mismatch", false, "failed"),
-        ("double", false, "failed"),
+        ("conflict", false, "retry_exhausted"),
+        ("invalid", false, "retry_exhausted"),
+        ("identity", false, "retry_exhausted"),
+        ("empty", false, "retry_exhausted"),
+        ("error", false, "needs_intervention"),
+        ("session", false, "retry_exhausted"),
+        ("mismatch", false, "retry_exhausted"),
+        ("double", false, "retry_exhausted"),
     ] {
         let f = setup(mode);
         let status = run(&f);
@@ -172,17 +190,19 @@ fn resume_requires_exact_retired_same_task_session_and_restricted_mode() {
     let f = Fixture::new();
     let script = f.root.join("substitute.py");
     fs::write(&script, SUBSTITUTE).unwrap();
-    f.import(json!([{"id":"T01","title":"Resume Claude","executor":{"kind":"claude","executable":"python","launcher_args":[script,"valid"],"resume_attempt":"prior","permissions":"restricted"}}]));
+    f.import_native_substitute(json!([{"id":"T01","title":"Resume Claude","executor":{"kind":"claude","executable":"python","launcher_args":[script,"valid"],"resume_attempt":"prior","permissions":"restricted"}}]));
     let prior = f.data.join("attempts/prior");
     fs::create_dir_all(&prior).unwrap();
     let session = "12345678-1234-4234-8234-123456789abc";
-    fs::write(prior.join("claude-observation.json"),serde_json::to_vec(&json!({"task_id":"T01","attempt_id":"prior","session_id":session,"completed_turn":false,"protocol_error":null,"unknown_records":0,"invalid_records":0,"activity_records":0,"raw_stdout":"stdout.log","raw_stderr":"stderr.log","failure_class":null,"native_model":null,"native_permissions":null,"result_source":null})).unwrap()).unwrap();
+    fs::write(prior.join("claude-observation.json"),serde_json::to_vec(&json!({"task_id":"T01","attempt_id":"prior","session_id":session,"completed_turn":false,"protocol_error":null,"unknown_records":0,"invalid_records":0,"activity_records":0,"raw_stdout":"stdout.log","raw_stderr":"stderr.log","failure_class":"transient_service_or_connection","native_model":null,"native_permissions":null,"result_source":null})).unwrap()).unwrap();
     let conn = rusqlite::Connection::open(f.data.join("state.sqlite3")).unwrap();
     conn.execute(
         "INSERT INTO attempts(id,run_id,task_id,state) VALUES('prior','demo','T01','retired')",
         [],
     )
     .unwrap();
+    drop(conn);
+    f.prepare_native_resume();
     let status = run(&f);
     assert_eq!(status["complete"], true, "{status}");
     let args = read(f.root.join("seen.json"))["args"]
@@ -213,7 +233,9 @@ fn foreign_resume_is_rejected_before_spawning_and_unknown_effort_never_falls_bac
         let mut executor =
             json!({"kind":"claude","executable":"python","launcher_args":[script,"valid"]});
         executor[field] = value;
-        f.import(json!([{"id":"T01","title":"Invalid native config","executor":executor}]));
+        f.import_native_substitute(
+            json!([{"id":"T01","title":"Invalid native config","executor":executor}]),
+        );
         let output = f.call(&["run", "--run", "demo"]);
         assert!(!output.status.success(), "{field}");
         assert!(!f.root.join("seen.json").exists(), "{field} spawned");
@@ -229,7 +251,7 @@ fn jtasks_alias_resolves_claude_native_agent_and_immutable_configuration() {
     fs::write(f.data.join("config/profiles.json"),serde_json::to_vec(&json!({"schema_version":1,"profiles":{
         "review":{"executor":"claude","provider":"bedrock","model":"profile-model","effort":"medium","native_agent":"native-reviewer","autonomy":"restricted","executable":"python","launcher_args":[script,"valid"]}
     }})).unwrap()).unwrap();
-    f.import(json!([{"id":"T01","title":"Alias Claude","executor":{"kind":"profile","alias":"review","overrides":{"model":"task-model","effort":"high"}}}]));
+    f.import_native_substitute(json!([{"id":"T01","title":"Alias Claude","executor":{"kind":"profile","alias":"review","overrides":{"model":"task-model","effort":"high"}}}]));
     let status = run(&f);
     assert_eq!(status["complete"], true, "{status}");
     let seen = read(f.root.join("seen.json"));
@@ -264,7 +286,7 @@ fn jtasks_alias_resolves_claude_native_agent_and_immutable_configuration() {
 #[ignore = "installed Claude --version only; no account turn"]
 fn installed_claude_launches_through_common_custody_without_a_model_turn() {
     let f = Fixture::new();
-    f.import(json!([{"id":"T01","title":"Native version probe","executor":{"kind":"claude","launcher_args":["--version"]}}]));
+    f.import_native_substitute(json!([{"id":"T01","title":"Native version probe","executor":{"kind":"claude","launcher_args":["--version"]}}]));
     let status = run(&f);
     assert_eq!(status["complete"], false);
     let dir = dir(&f, &status);

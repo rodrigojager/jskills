@@ -35,6 +35,31 @@ impl Fixture {
         }
     }
 
+    // Adopt a historical retired native attempt through the writer's recovery path,
+    // then explicitly advance its infrastructure wait without inventing authority.
+    pub fn prepare_native_resume(&self) {
+        let workspace = jtasks::storage::Workspace::resolve(&self.root, Some(&self.data)).unwrap();
+        {
+            let guard = jtasks::resources::ControllerGuard::acquire(&workspace.git_dir).unwrap();
+            let store = jtasks::storage::Store::open(&workspace, &guard).unwrap();
+            jtasks::controller::recovery::after_retire(&workspace, &store, "demo", "T01", "prior")
+                .unwrap();
+        }
+        let retry = self.call(&[
+            "retry",
+            "T01",
+            "--run",
+            "demo",
+            "--reason",
+            "Synthetic native connection restored",
+        ]);
+        assert!(
+            retry.status.success(),
+            "{}",
+            String::from_utf8_lossy(&retry.stderr)
+        );
+    }
+
     pub fn command(&self) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_jtasks"));
         // English contract fixtures must not depend on the host locale.
@@ -69,6 +94,16 @@ impl Fixture {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+    /// Explicit test-only metadata exception; admission validation still runs.
+    pub fn import_native_substitute(&self, mut tasks: Value) {
+        for task in tasks.as_array_mut().unwrap() {
+            task["unknown_capabilities"] = json!({
+                "actor": "adapter-acceptance",
+                "reason": "Isolated native CLI protocol substitute; no catalog or account is asserted"
+            });
+        }
+        self.import(tasks);
     }
     pub fn snapshot(&self) -> Value {
         let output = self.call(&["status", "--run", "demo"]);

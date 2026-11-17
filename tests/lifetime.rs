@@ -334,7 +334,7 @@ fn worker_controller_loss_kills_descendants_and_explicit_resume_preserves_edits(
     fs::write(&script, "$ErrorActionPreference='Stop'\nAdd-Content -LiteralPath (Join-Path $env:JTASKS_LIFETIME_DIRECTORY '../edits.txt') -Value 'worker edit'\n& $env:JTASKS_LIFETIME_TEST_EXE --exact custody_fixture_process --nocapture\n& $env:JTASKS_BIN result --receipt ('result-'+$env:JTASKS_ATTEMPT_ID) --outcome completed --summary 'resumed same task after proven cleanup'\n").unwrap();
     fs::create_dir_all(&directory).unwrap();
     fs::write(f.root.join("edits.txt"), "user edit\n").unwrap();
-    let worker = json!({"id":"A","title":"Owned worker","executor":{"kind":"codex","executable":"pwsh","launcher_args":["-NoLogo","-NoProfile","-File",script]}});
+    let worker = json!({"id":"A","title":"Owned worker","unknown_capabilities":{"actor":"custody-acceptance","reason":"Isolated PowerShell process substitute; no native account"},"executor":{"kind":"codex","executable":"pwsh","launcher_args":["-NoLogo","-NoProfile","-File",script]}});
     f.import(json!([worker]));
     let controller = |mode: &str| {
         let mut command = f.command();

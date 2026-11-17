@@ -9,7 +9,14 @@ use serde_json::json;
 use std::fs;
 use support::{Fixture, task};
 
-fn record(store: &mut Store, run: &str, task: &str, attempt: &str, summary: &str) {
+fn record(
+    store: &mut Store,
+    workspace: &Workspace,
+    run: &str,
+    task: &str,
+    attempt: &str,
+    summary: &str,
+) {
     store.intent(run, task, attempt).unwrap();
     store.launched(attempt, 42).unwrap();
     store
@@ -20,12 +27,23 @@ fn record(store: &mut Store, run: &str, task: &str, attempt: &str, summary: &str
                 receipt_id: format!("receipt-{attempt}"),
                 attempt_id: attempt.into(),
                 task_id: task.into(),
-                outcome: Outcome::Blocked,
+                outcome: Outcome::Failed,
                 summary: summary.into(),
             },
         )
         .unwrap();
     store.retire(run, task, attempt, Some(7), true).unwrap();
+    jtasks::controller::recovery::after_retire(workspace, store, run, task, attempt).unwrap();
+    jtasks::controller::cooldowns::retry(
+        workspace,
+        store,
+        run,
+        task,
+        "Explicit fixture retry preserving history",
+        &format!("retry-{attempt}"),
+        false,
+    )
+    .unwrap();
 }
 
 #[test]
@@ -55,6 +73,7 @@ fn launched_retry_gets_common_context_and_only_its_own_recorded_facts() {
         let mut store = Store::open(&workspace, &guard).unwrap();
         record(
             &mut store,
+            &workspace,
             "demo",
             "A",
             "old-a",
@@ -62,6 +81,7 @@ fn launched_retry_gets_common_context_and_only_its_own_recorded_facts() {
         );
         record(
             &mut store,
+            &workspace,
             "demo",
             "B",
             "old-b",
@@ -69,25 +89,19 @@ fn launched_retry_gets_common_context_and_only_its_own_recorded_facts() {
         );
         record(
             &mut store,
+            &workspace,
             "other",
             "A",
             "other-run-a",
             "OTHER_RUN_PRIVATE_HISTORY",
         );
-        // Test setup represents an explicitly approved retry; the renderer never mutates task state.
-        store
-            .conn
-            .execute(
-                "UPDATE tasks SET state='interrupted' WHERE run_id='demo'",
-                [],
-            )
-            .unwrap();
         store.conn.execute_batch("CREATE TABLE IF NOT EXISTS managed_commands(id TEXT PRIMARY KEY,request_id TEXT UNIQUE,run_id TEXT,task_id TEXT,attempt_id TEXT,spec TEXT,state TEXT,pid INTEGER,exit_code INTEGER,reason TEXT)").unwrap();
         for (id, task, attempt) in [
             ("cmd-a", "A", "old-a"),
             ("OTHER_TASK_COMMAND", "B", "old-b"),
         ] {
-            store.conn.execute("INSERT INTO managed_commands(id,request_id,run_id,task_id,attempt_id,spec,state,exit_code,reason) VALUES(?1,?1,'demo',?2,?3,'{}','exited',9,'test failed')",[id,task,attempt]).unwrap();
+            let spec = json!({"request_id":id,"run":"demo","task":task,"attempt":attempt,"program":"synthetic-not-launched","cwd":f.root});
+            store.conn.execute("INSERT INTO managed_commands(id,request_id,run_id,task_id,attempt_id,spec,state,exit_code,reason) VALUES(?1,?1,'demo',?2,?3,?4,'exited',9,'test failed')",rusqlite::params![id,task,attempt,spec.to_string()]).unwrap();
         }
     }
     let old = f.data.join("attempts/old-a");
@@ -157,6 +171,7 @@ fn recovery_reads_are_bounded_read_only_and_missing_logs_are_uncertain() {
         for index in 0..7 {
             record(
                 &mut store,
+                &workspace,
                 "demo",
                 "A",
                 &format!("old-{index}"),
@@ -208,8 +223,8 @@ fn oversized_and_malformed_explicit_logs_do_not_inject_transcripts() {
     {
         let guard = ControllerGuard::acquire(&workspace.git_dir).unwrap();
         let mut store = Store::open(&workspace, &guard).unwrap();
-        record(&mut store, "demo", "A", "malformed", "result");
-        record(&mut store, "demo", "A", "oversized", "result");
+        record(&mut store, &workspace, "demo", "A", "malformed", "result");
+        record(&mut store, &workspace, "demo", "A", "oversized", "result");
     }
     for (id, content) in [
         ("malformed", "unstructured conversation".into()),
@@ -235,7 +250,7 @@ fn explicit_fact_lists_and_utf8_strings_have_independent_bounds() {
     {
         let guard = ControllerGuard::acquire(&workspace.git_dir).unwrap();
         let mut store = Store::open(&workspace, &guard).unwrap();
-        record(&mut store, "demo", "A", "old", "result");
+        record(&mut store, &workspace, "demo", "A", "old", "result");
     }
     let dir = f.data.join("attempts/old");
     fs::create_dir_all(&dir).unwrap();

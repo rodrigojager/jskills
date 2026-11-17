@@ -205,7 +205,7 @@ fn running_attempt_keeps_exact_snapshot_after_profile_edit_and_next_attempt_reva
     let plan = write(
         &f,
         "profile-plan.json",
-        json!({"schema_version":1,"completion":"judgment","operation_placement":"none","profile_defaults":{"effort":"low"},"tasks":[{"id":"T1","title":"Profile worker","executor":{"kind":"profile","alias":"work","overrides":{"effort":"medium","autonomy":"restricted"}}}]}),
+        json!({"schema_version":1,"completion":"judgment","operation_placement":"none","profile_defaults":{"effort":"low"},"tasks":[{"id":"T1","title":"Profile worker","unknown_capabilities":{"actor":"profile-acceptance","reason":"Synthetic native protocol, no catalog/account claims"},"executor":{"kind":"profile","alias":"work","overrides":{"effort":"medium","autonomy":"restricted"}}}]}),
     );
     success(&f, &["import", plan.to_str().unwrap(), "--run", "demo"]);
     let mut controller = command(&f)

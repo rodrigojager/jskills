@@ -52,7 +52,7 @@ fn executor(f: &Fixture, mode: &str) -> Value {
 fn setup(mode: &str) -> Fixture {
     let f = Fixture::new();
     let executor = executor(&f, mode);
-    f.import(json!([{"id":"T01","title":"Direct OpenCode","executor":executor}]));
+    f.import_native_substitute(json!([{"id":"T01","title":"Direct OpenCode","executor":executor}]));
     f
 }
 fn run(f: &Fixture) -> Value {
@@ -135,11 +135,11 @@ fn public_cli_uses_private_custody_explicit_selection_and_literal_stdin() {
 #[test]
 fn prose_helpers_steps_and_exit_never_designate_a_result() {
     for (mode, complete, state) in [
-        ("prose", false, "needs_intervention"),
-        ("missing", false, "needs_intervention"),
-        ("error", false, "failed"),
-        ("mismatch", false, "failed"),
-        ("part", false, "failed"),
+        ("prose", false, "retry_exhausted"),
+        ("missing", false, "retry_exhausted"),
+        ("error", false, "needs_intervention"),
+        ("mismatch", false, "retry_exhausted"),
+        ("part", false, "retry_exhausted"),
         ("client", true, "completed"),
         ("client-error", true, "completed"),
         ("exit", true, "completed"),
@@ -161,7 +161,7 @@ fn prior(f: &Fixture, task: &str, session: &str) {
     let path = f.data.join("attempts/prior");
     fs::create_dir_all(&path).unwrap();
     fs::write(path.join("opencode-observation.json"),serde_json::to_vec(&json!({"task_id":task,"attempt_id":"prior","session_id":session,
-        "step_finishes":0,"activity_records":0,"unknown_records":0,"invalid_records":0,"protocol_error":null,"failure_class":null,"result_source":null,"raw_stdout":"stdout.log","raw_stderr":"stderr.log"})).unwrap()).unwrap();
+        "step_finishes":0,"activity_records":0,"unknown_records":0,"invalid_records":0,"protocol_error":null,"failure_class":"transient_service_or_connection","result_source":null,"raw_stdout":"stdout.log","raw_stderr":"stderr.log"})).unwrap()).unwrap();
     let conn = rusqlite::Connection::open(f.data.join("state.sqlite3")).unwrap();
     conn.execute(
         "INSERT INTO attempts(id,run_id,task_id,state) VALUES('prior','demo','T01','retired')",
@@ -176,8 +176,9 @@ fn exact_same_task_resume_is_checked_before_launch_and_restricted_rejects_asks()
     let mut config = executor(&f, "resume");
     config["resume_attempt"] = json!("prior");
     config["permissions"] = json!("restricted");
-    f.import(json!([{"id":"T01","title":"Resume","executor":config}]));
+    f.import_native_substitute(json!([{"id":"T01","title":"Resume","executor":config}]));
     prior(&f, "T01", "ses_retired123");
+    f.prepare_native_resume();
     let status = run(&f);
     assert_eq!(status["complete"], true, "{status}");
     let args = read(f.root.join("seen.json"))["args"]
@@ -212,19 +213,35 @@ fn foreign_invalid_or_unavailable_resume_never_starts_a_fresh_worker() {
         let f = Fixture::new();
         let mut config = executor(&f, mode);
         config["resume_attempt"] = json!("prior");
-        f.import(json!([{"id":"T01","title":"Resume","executor":config}]));
-        prior(
-            &f,
-            if mode == "foreign" { "OTHER" } else { "T01" },
-            if mode == "invalid" {
-                "last"
-            } else {
-                "ses_prior123"
-            },
-        );
+        f.import_native_substitute(json!([{"id":"T01","title":"Resume","executor":config}]));
+        prior(&f, "T01", "ses_prior123");
+        f.prepare_native_resume();
+        // Corrupt only the adapter evidence after the coherent recovery decision,
+        // so rejection cannot be a generic missing-allowance false positive.
+        let path = f.data.join("attempts/prior/opencode-observation.json");
+        let mut evidence = read(&path);
+        if mode == "foreign" {
+            evidence["task_id"] = json!("OTHER");
+        }
+        if mode == "invalid" {
+            evidence["session_id"] = json!("last");
+        }
+        fs::write(path, serde_json::to_vec(&evidence).unwrap()).unwrap();
         let output = f.call(&["run", "--run", "demo"]);
         assert!(!output.status.success(), "{mode}");
         assert!(!f.root.join("seen.json").exists(), "{mode} spawned");
+        let conn = rusqlite::Connection::open(f.data.join("state.sqlite3")).unwrap();
+        let diagnostic: String = conn.query_row("SELECT detail FROM journal WHERE event='definite_prelaunch_failure' ORDER BY sequence DESC LIMIT 1", [], |r|r.get(0)).unwrap();
+        let expected = match mode {
+            "foreign" => "resume session belongs to another task",
+            "invalid" => "invalid exact OpenCode session identity",
+            _ => "exact OpenCode session unavailable; resume refused without fallback",
+        };
+        assert!(diagnostic.contains(expected), "{mode}: {diagnostic}");
+        assert_eq!(
+            f.root.join("resume-check.json").exists(),
+            mode == "unavailable"
+        );
     }
 }
 
@@ -236,7 +253,7 @@ fn alias_launch_uses_immutable_task_selection_and_records_native_defaults() {
     fs::write(f.data.join("config/profiles.json"),serde_json::to_vec(&json!({"schema_version":1,"profiles":{"review":{
         "executor":"opencode","provider":"profile-provider","model":"profile-model","variant":"profile-variant",
         "autonomy":"restricted","executable":"python","launcher_args":native["launcher_args"]}}})).unwrap()).unwrap();
-    f.import(json!([{"id":"T01","title":"Alias","executor":{"kind":"profile","alias":"review","overrides":{"model":"task-model","variant":"task-variant"}}}]));
+    f.import_native_substitute(json!([{"id":"T01","title":"Alias","executor":{"kind":"profile","alias":"review","overrides":{"model":"task-model","variant":"task-variant"}}}]));
     let status = run(&f);
     assert_eq!(status["complete"], true, "{status}");
     let args = read(f.root.join("seen.json"))["args"]
@@ -274,7 +291,7 @@ fn malformed_native_selectors_fail_without_provider_fallback() {
         let f = Fixture::new();
         let mut config = executor(&f, "client");
         config[field] = json!(value);
-        f.import(json!([{"id":"T01","title":"Invalid","executor":config}]));
+        f.import_native_substitute(json!([{"id":"T01","title":"Invalid","executor":config}]));
         let output = f.call(&["run", "--run", "demo"]);
         assert!(!output.status.success(), "{field}");
         assert!(!f.root.join("seen.json").exists(), "{field} spawned");
@@ -285,7 +302,7 @@ fn malformed_native_selectors_fail_without_provider_fallback() {
 #[ignore = "installed OpenCode --version only; no model turn, metadata service or account mutation"]
 fn installed_opencode_native_npm_shim_uses_common_custody_without_a_model_turn() {
     let f = Fixture::new();
-    f.import(json!([{"id":"T01","title":"Version probe","executor":{"kind":"opencode","launcher_args":["--version"],"provider":"unprobed","model":"unprobed"}}]));
+    f.import_native_substitute(json!([{"id":"T01","title":"Version probe","executor":{"kind":"opencode","launcher_args":["--version"],"provider":"unprobed","model":"unprobed"}}]));
     let status = run(&f);
     assert_eq!(status["complete"], false);
     let dir = dir(&f, &status);

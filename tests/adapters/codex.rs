@@ -40,7 +40,7 @@ fn setup(mode: &str) -> Fixture {
     let f = Fixture::new();
     let script = f.root.join("substitute.py");
     fs::write(&script, SUBSTITUTE).unwrap();
-    f.import(json!([{"id":"T01","title":"Direct Codex", "executor":{
+    f.import_native_substitute(json!([{"id":"T01","title":"Direct Codex", "executor":{
         "kind":"codex","executable":"python","launcher_args":[script,mode],
         "prompt":"literal ; $(Write-Output INJECTED) `echo wrong` \"quotes\"\nUnicode: 日本語",
         "model":"selected-model","provider":"selected-provider","reasoning_effort":"high",
@@ -64,7 +64,7 @@ fn dir(f: &Fixture, snapshot: &Value) -> std::path::PathBuf {
 }
 #[test]
 fn public_cli_launches_codex_with_safe_prompt_exact_identity_and_raw_capture() {
-    let f = setup("partial");
+    let f = setup("valid");
     let status = run(&f);
     assert_eq!(status["complete"], true);
     let dir = dir(&f, &status);
@@ -72,9 +72,9 @@ fn public_cli_launches_codex_with_safe_prompt_exact_identity_and_raw_capture() {
         serde_json::from_slice(&fs::read(dir.join("codex-observation.json")).unwrap()).unwrap();
     assert_eq!(observation["thread_id"], "exact-thread-123");
     assert_eq!(observation["unknown_records"], 1);
-    assert_eq!(observation["invalid_records"], 1);
+    assert_eq!(observation["invalid_records"], 0);
     let stdout = fs::read_to_string(dir.join("stdout.log")).unwrap();
-    assert!(stdout.contains("future.event") && stdout.ends_with("{\"unfinished\":"));
+    assert!(stdout.contains("future.event"));
     assert_eq!(
         fs::read_to_string(dir.join("stderr.log")).unwrap(),
         "available diagnostic bytes\n"
@@ -112,15 +112,33 @@ fn public_cli_launches_codex_with_safe_prompt_exact_identity_and_raw_capture() {
     );
 }
 #[test]
+fn incomplete_tail_retains_raw_bytes_and_rejects_native_acceptance() {
+    let f = setup("partial");
+    let status = run(&f);
+    assert_eq!(status["complete"], false);
+    assert_eq!(status["tasks"][0]["state"], "retry_exhausted");
+    let path = dir(&f, &status);
+    let observation: Value =
+        serde_json::from_slice(&fs::read(path.join("codex-observation.json")).unwrap()).unwrap();
+    assert_eq!(observation["invalid_records"], 1);
+    assert!(observation["protocol_error"].is_string());
+    assert!(
+        fs::read_to_string(path.join("stdout.log"))
+            .unwrap()
+            .ends_with("{\"unfinished\":")
+    );
+}
+
+#[test]
 fn only_designated_native_or_scoped_payloads_complete_and_conflicts_fail() {
     for (mode, completed, state) in [
-        ("helper", false, "needs_intervention"),
-        ("prose", false, "failed"),
+        ("helper", false, "retry_exhausted"),
+        ("prose", false, "retry_exhausted"),
         ("client", true, "completed"),
         ("client-prose", true, "completed"),
         ("same", true, "completed"),
-        ("conflict", false, "failed"),
-        ("noterminal", false, "failed"),
+        ("conflict", false, "retry_exhausted"),
+        ("noterminal", false, "retry_exhausted"),
     ] {
         let f = setup(mode);
         let status = run(&f);
@@ -145,7 +163,7 @@ fn only_designated_native_or_scoped_payloads_complete_and_conflicts_fail() {
 #[ignore = "requires installed Codex CLI; invokes --version only, without an account turn"]
 fn installed_codex_launches_through_public_cli_without_a_model_turn() {
     let f = Fixture::new();
-    f.import(json!([{"id":"T01","title":"Native version probe","executor":{"kind":"codex","launcher_args":["--version"]}}]));
+    f.import_native_substitute(json!([{"id":"T01","title":"Native version probe","executor":{"kind":"codex","launcher_args":["--version"]}}]));
     let status = run(&f);
     assert_eq!(status["complete"], false);
     let stdout = fs::read_to_string(dir(&f, &status).join("stdout.log")).unwrap();
@@ -158,13 +176,13 @@ fn exact_same_task_resume_and_restricted_flags_are_explicit() {
     fs::write(&script, SUBSTITUTE).unwrap();
     let previous = f.data.join("attempts/prior");
     fs::create_dir_all(&previous).unwrap();
-    let observation = json!({"task_id":"T01","attempt_id":"prior","thread_id":"exact-thread-123","completed_turn":false,"protocol_error":null,"unknown_records":0,"invalid_records":0,"raw_stdout":"stdout.log","raw_stderr":"stderr.log","failure_class":null});
+    let observation = json!({"task_id":"T01","attempt_id":"prior","thread_id":"exact-thread-123","completed_turn":false,"protocol_error":null,"unknown_records":0,"invalid_records":0,"raw_stdout":"stdout.log","raw_stderr":"stderr.log","failure_class":"transient_service_or_connection"});
     fs::write(
         previous.join("codex-observation.json"),
         serde_json::to_vec(&observation).unwrap(),
     )
     .unwrap();
-    f.import(json!([{"id":"T01","title":"Resume exact task","executor":{"kind":"codex","executable":"python","launcher_args":[script,"valid"],"resume_attempt":"prior","permissions":"restricted"}}]));
+    f.import_native_substitute(json!([{"id":"T01","title":"Resume exact task","executor":{"kind":"codex","executable":"python","launcher_args":[script,"valid"],"resume_attempt":"prior","permissions":"restricted"}}]));
     rusqlite::Connection::open(f.data.join("state.sqlite3"))
         .unwrap()
         .execute(
@@ -172,6 +190,7 @@ fn exact_same_task_resume_and_restricted_flags_are_explicit() {
             [],
         )
         .unwrap();
+    f.prepare_native_resume();
     assert_eq!(run(&f)["complete"], true);
     let seen: Value = serde_json::from_slice(&fs::read(f.root.join("seen.json")).unwrap()).unwrap();
     let args = seen["args"].as_array().unwrap();

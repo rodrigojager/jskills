@@ -174,10 +174,32 @@ fn surviving_command_retains_inherited_resources_after_worker_retires() {
     });
     assert_eq!(snapshot["tasks"][1]["attempts"], json!([]));
     let held = jtasks::resources::registry::list(&f.data.join("advisory.sqlite3")).unwrap();
-    assert_eq!(held.len(), 1);
-    assert_eq!(held[0].owner.task, "A");
+    // Worker retirement retains its hold until the separately reserved command
+    // scope is empty. Both reservations must belong to the same task authority.
+    assert_eq!(held.len(), 2, "{held:?}");
+    assert!(held.iter().all(|h| h.owner.task == "A"
+        && h.owner.run == "demo"
+        && h.owner.attempt.as_deref() == Some(attempt)));
+    assert_ne!(held[0].id, held[1].id);
+    assert_eq!(held[0].resource, held[1].resource);
+    let observed = call(
+        &f,
+        &["exec", "status", receipt["command_id"].as_str().unwrap()],
+    );
+    assert_eq!(observed["state"], "unknown");
+    assert_eq!(observed["recorded_state"], "running");
+    assert_eq!(
+        observed["custody_observation"],
+        "persisted; current process liveness unobserved"
+    );
+    assert_eq!(f.snapshot()["tasks"][1]["attempts"], json!([]));
     assert!(controller.0.wait().unwrap().success());
     assert_eq!(f.snapshot()["tasks"][1]["state"], "completed");
+    assert!(
+        jtasks::resources::registry::list(&f.data.join("advisory.sqlite3"))
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]

@@ -171,7 +171,9 @@ fn verify_resume(
         .stdin(Stdio::null())
         .stdout(File::create(probe.join("stdout.log"))?)
         .stderr(File::create(probe.join("stderr.log"))?);
-    let mut process = crate::execution::custody::OwnedProcess::spawn(&mut command, dir)?;
+    // The availability probe is not a worker invocation. Keep its custody
+    // separate so a refused exact session cannot become a fresh work retry.
+    let mut process = crate::execution::custody::OwnedProcess::spawn(&mut command, &probe)?;
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if let Some(exit) = process.poll()? {

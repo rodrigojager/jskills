@@ -89,7 +89,7 @@ fn prose_helper_json_exit_zero_and_blank_summaries_never_complete() {
         );
         let snapshot = f.snapshot();
         assert_eq!(
-            snapshot["tasks"][0]["state"], "needs_intervention",
+            snapshot["tasks"][0]["state"], "retry_exhausted",
             "{outcome}"
         );
         assert!(snapshot["tasks"][0]["attempts"][0]["receipt_id"].is_null());
@@ -108,7 +108,15 @@ fn blocked_and_failed_are_attributable_but_run_remains_incomplete() {
         assert_eq!(f.call(&["run", "--run", "demo"]).status.code(), Some(3));
         let snapshot = f.snapshot();
         assert_eq!(snapshot["state"], "incomplete");
-        assert_eq!(snapshot["tasks"][0]["state"], outcome);
+        assert_eq!(
+            snapshot["tasks"][0]["state"],
+            if outcome == "failed" {
+                "retry_exhausted"
+            } else {
+                outcome
+            }
+        );
+        assert_eq!(snapshot["tasks"][0]["attempts"][0]["outcome"], outcome);
         assert!(!snapshot["tasks"][0]["attempts"][0]["receipt_id"].is_null());
         assert_eq!(snapshot["tasks"][1]["attempts"], json!([]));
     }
@@ -272,7 +280,11 @@ fn explicit_stop_retires_process_and_explicit_run_resumes_with_new_identity() {
     assert_eq!(controller.wait().unwrap().code(), Some(3));
     let snapshot = f.snapshot();
     assert_eq!(snapshot["state"], "stopped");
-    assert_eq!(snapshot["tasks"][0]["state"], "interrupted");
+    assert_eq!(snapshot["tasks"][0]["state"], "pending");
+    assert_eq!(
+        snapshot["tasks"][0]["attempts"][0]["process_state"],
+        "interrupted"
+    );
     assert!(f.call(&["run", "--run", "demo"]).status.success());
     let attempts = f.snapshot()["tasks"][0]["attempts"]
         .as_array()
