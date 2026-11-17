@@ -1,3 +1,4 @@
+pub mod i18n;
 pub mod output;
 pub mod projections;
 pub mod recovery_facts;

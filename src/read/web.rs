@@ -163,6 +163,10 @@ fn route(workspace: &Workspace, run: &str, host: &str, bytes: &[u8]) -> Result<V
         "/" => ("text/html", include_bytes!("../../web/index.html")),
         "/app.js" => ("text/javascript", include_bytes!("../../web/app.js")),
         "/style.css" => ("text/css", include_bytes!("../../web/style.css")),
+        "/presentation.json" => {
+            let body = serde_json::to_vec(&super::i18n::presentation())?;
+            return Ok(response(200, "application/json", &body));
+        }
         "/api/read" => {
             let request = request(run, query)?;
             let body = serde_json::to_vec(&projections::read(workspace, &request)?)?;

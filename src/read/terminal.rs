@@ -1,5 +1,8 @@
 //! Bounded presentation of persisted read projections. No scheduling or control.
-use super::projections::{self, Request, View};
+use super::{
+    i18n,
+    projections::{self, Request, View},
+};
 use crate::storage::Workspace;
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -82,15 +85,20 @@ pub fn render(value: &Value, dashboard: Option<&str>, final_summary: bool) -> St
         out,
         "{}jtasks {} | recorded state={} | controller={}",
         if final_summary {
-            "Final summary | "
+            format!("{} | ", i18n::tr("view.final"))
         } else {
-            ""
+            String::new()
         },
         text(&s["identity"]["run"]),
         text(&s["state"]),
         text(&s["availability"]["controller"])
     );
-    let _ = writeln!(out, "Objective: {}", text(&s["objective"]));
+    let _ = writeln!(
+        out,
+        "{}: {}",
+        i18n::tr("view.objective"),
+        text(&s["objective"])
+    );
     let _ = writeln!(
         out,
         "Persisted as-of={} | cursor={} | graph revision={}",
@@ -100,7 +108,8 @@ pub fn render(value: &Value, dashboard: Option<&str>, final_summary: bool) -> St
     );
     let _ = writeln!(
         out,
-        "Tasks: completed={} current={} original={} delta={} | development={} | run={}",
+        "{}: completed={} current={} original={} delta={} | development={} | run={}",
+        i18n::tr("view.tasks"),
         text(&graph["completed"]),
         text(&graph["current_total"]),
         text(&graph["original_total"]),
@@ -108,7 +117,12 @@ pub fn render(value: &Value, dashboard: Option<&str>, final_summary: bool) -> St
         flag(&s["development_complete"]),
         flag(&s["complete"])
     );
-    let _ = writeln!(out, "States: {}", text(&s["task_counts"]));
+    let _ = writeln!(
+        out,
+        "{}: {}",
+        i18n::tr("view.states"),
+        text(&s["task_counts"])
+    );
     let coverage = list(&graph["coverage"]);
     let _ = writeln!(
         out,
@@ -118,7 +132,8 @@ pub fn render(value: &Value, dashboard: Option<&str>, final_summary: bool) -> St
     );
     let _ = writeln!(
         out,
-        "Required verification={} | pending required operations={}",
+        "{}={} | pending required operations={}",
+        i18n::tr("view.verification"),
         flag(&s["verification_complete"]),
         text(&s["pending_required_operations"])
     );

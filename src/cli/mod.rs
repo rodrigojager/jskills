@@ -6,6 +6,7 @@ pub mod decisions;
 pub mod doctor;
 pub mod exec;
 pub mod graph;
+pub mod help;
 pub mod operations;
 pub mod profiles;
 pub mod questions;
@@ -26,7 +27,7 @@ use crate::{
     transport::{self, ControlEndpoint, Request},
 };
 use anyhow::{Context, Result, ensure};
-use clap::{Parser, Subcommand};
+use clap::{FromArgMatches, Parser, Subcommand};
 use std::{fs, net::SocketAddr, path::PathBuf};
 
 /// Independent foreground task execution. Exit 3 means unfinished/intervention.
@@ -37,6 +38,9 @@ use std::{fs, net::SocketAddr, path::PathBuf};
     after_help = "Example: jtasks validate plan.json\nExample: jtasks import plan.json --run demo\nExample: jtasks run --run demo\nExample: jtasks status --run demo"
 )]
 pub struct Cli {
+    /// Human language only; --lang > JTASKS_LANG > JLOCK_LANG > system > English.
+    #[arg(long, global = true)]
+    pub lang: Option<String>,
     /// Emit the structured command projection (commands already default to JSON).
     #[arg(long, global = true)]
     pub json: bool,
@@ -156,7 +160,8 @@ pub enum Action {
 }
 
 pub fn execute() -> Result<i32> {
-    let cli = Cli::parse();
+    let matches = help::command().get_matches();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
     match cli.command {
         Action::Ask(args) => questions::ask(args),
         Action::Log(args) => activity::log(args),

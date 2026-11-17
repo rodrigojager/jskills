@@ -14,6 +14,7 @@ One row per folder (and relevant subfolder) of this repository. Keep it portable
 | `tests/` | focused public CLI and durable receipt scenarios |
 | `skills/source/` | canonical authoring/execution/estimator instructions and schema examples |
 | `skills/codex/`, `skills/claude/`, `skills/opencode/` | derived harness instruction packages; no copied runtime core |
+| `locales/` | eleven embedded human catalogs and retained MIT translation license |
 | `scripts/skills.rs` | local deterministic skill build/parity check; never global installation |
 
 ## Initial public contract
@@ -91,3 +92,5 @@ CLI runtime prerequisites. It uses a fresh session and public validation to fill
 only missing active-duration estimates; it never imports or starts a run.
 
 AI working artifacts live outside this repository, in the container's `_work/` folder.
+
+Human localization uses `--lang`, `JTASKS_LANG`, `JLOCK_LANG`, system locale, then English. Catalogs selectively adapt applicable legacy glossary/process labels; obsolete scheduling/wake notices are excluded. New help/view labels use per-key English fallback; machine projections and protocol stay English.

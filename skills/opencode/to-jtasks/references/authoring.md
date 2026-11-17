@@ -18,7 +18,7 @@ For an existing jtasks alias, use `"executor": {"kind":"profile","alias":"chosen
 
 ## Operations
 
-Every operation needs a unique `id`, explicit `stage`, `required`, nonempty `revision`, explicit checkout-relative `inputs`, `initial`, and an optional `repair_task`. Inputs are actual paths without globs or parent traversal. `revision` identifies the authored input revision; the controller fingerprints inputs for freshness.
+Every operation needs a unique `id`, explicit `stage`, `required`, nonempty `revision`, explicit checkout-relative `inputs`, `initial`, and an optional `repair_task`. Inputs are actual paths without globs or parent traversal. `revision` identifies the authored input revision. Freshness uses explicit revision and `operations inputs-changed` invalidation; the controller does not automatically fingerprint general operation inputs. Only a declared Git checkpoint captures exact checkpoint-scope bytes at admission of the matching initial check or repair recheck, keyed to that command and revision.
 
 `initial` has `program`, `args`, `cwd` (checkout-relative allowed here), optional `script`, `environment_refs`, `resources`, `deadline_ms`. Environment refs map child variable names to controller variable names; never embed secret values. For a real shell, choose its executable/arguments and script explicitly. There is no implicit shell rewriting.
 
@@ -32,6 +32,12 @@ Stages:
 `depends_on` edges are objects: `{"kind":"operation","id":"setup"}`, `{"kind":"task_candidate","id":"T1"}` or `{"kind":"task_completed","id":"T1"}`. Stage edges already imply the described ordering; do not repeat them or create a check that requires its own effective completion. The CLI rejects combined task/operation cycles. Group/final checks do not retroactively gate their producing tasks; required operations still gate run verification. Use `mixed` to combine task/group/final placements. `none` forbids all operations.
 
 The controller selects only the declared initial invocation. A worker chooses follow-up repairs through managed commands, preserving task-lineage allowances; new operation IDs do not reset retry budgets. Use `operations repair-begin --help`, `repair-finish --help` and `inputs-changed --help` for explicit corrective receipts and changed-input invalidation. Arbitrary successful commands cannot silently replace a required original check.
+
+## Explicit Git checkpoints
+
+A group/final operation may declare `"checkpoint":{"paths":["src/exact-file.rs"]}`. Paths are unique exact regular files within its declared inputs, never directories/globs/traversal/Git metadata. Import records a clean scope baseline; pre-existing or staged scope ambiguity blocks attribution. Passing checks and designated completion never commit automatically.
+
+Use `checkpoint review --run <id> --operation <id> --reviewer <actor> --attribution <statement> --message <message>` to read exact hashes and checkout/data/run/operation/revision/HEAD/branch identity. Save its JSON review in the workspace artifact area. Only explicit `checkpoint apply --review <review.json>` applies an unchanged review, after relevant passing checks on the admitted scoped bytes and positive terminal/empty custody proofs, including reviewer snapshot/root even when no process was invoked. Unrelated staged content and working bytes are preserved. The writer/index guards and compare-and-swap protect apply; no branch creation/switching, worktree, stash, push or publication is implied. Git ref/index and SQLite cannot be one atomic transaction: uncertain intent blocks cleanup and requires explicit inspection/reconciliation.
 
 ## Reviewable preparation, then authorized execution
 

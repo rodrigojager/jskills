@@ -37,7 +37,10 @@ impl Fixture {
 
     pub fn command(&self) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_jtasks"));
+        // English contract fixtures must not depend on the host locale.
+        // Explicit --lang in localization tests still takes precedence.
         command
+            .env("JTASKS_LANG", "en")
             .arg("--root")
             .arg(&self.root)
             .arg("--data-dir")

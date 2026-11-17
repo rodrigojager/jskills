@@ -4,6 +4,9 @@ const main = document.querySelector('main');
 const identity = document.querySelector('#identity');
 const connection = document.querySelector('#connection');
 const error = document.querySelector('#error');
+let presentation = {};
+let commandLabels = {};
+const translated = (key, fallback) => presentation[key] || fallback;
 let generation = 0;
 let busy = false;
 let tasksRoute = '#tasks';
@@ -17,7 +20,7 @@ function el(tag, text, cls) {
 }
 function link(text, href) { const a = el('a', text); a.href = href; return a; }
 function route(view, fields = {}) { return `#${view}?${new URLSearchParams(fields)}`; }
-function state(value) { return el('span', labels[value] || human(value ?? 'unknown'), `state ${value || 'unknown'}`); }
+function state(value) { return el('span', labels[value] || commandLabels[value] || human(value ?? 'unknown'), `state ${value || 'unknown'}`); }
 function detail(title, value, open = false) {
   const d = el('details'); d.open = open; d.append(el('summary', title));
   d.append(el('pre', JSON.stringify(value, null, 2))); return d;
@@ -58,7 +61,7 @@ function card(id, status, href, title) {
 }
 function overview(data) {
   field('Run state', human(data.state), main);
-  field('Objective', data.objective, main);
+  field(translated('objective', 'Objective'), data.objective, main);
   const grid = el('div', undefined, 'grid');
   for (const [key, value] of Object.entries(data.task_counts)) {
     const c = el('div', undefined, 'card'); c.append(state(key), el('h3', String(value))); grid.append(c);
@@ -140,8 +143,8 @@ async function load(moveFocus = true) {
   try {
     const data = await read(kind, fields);
     if (ticket !== generation) return;
-    error.hidden = true; connection.textContent = 'Snapshot available · read only'; metadata(data);
-    main.replaceChildren(el('h2', view === 'task' || view === 'operation' ? `${human(view)} ${params.get('id')}` : human(view)));
+    error.hidden = true; connection.textContent = translated('snapshot', 'Snapshot available · read only'); metadata(data);
+    main.replaceChildren(el('h2', view === 'task' || view === 'operation' ? `${human(view)} ${params.get('id')}` : translated(view, human(view))));
     if (view === 'overview') overview(data);
     else if (view === 'tasks') taskList(data,params);
     else if (view === 'task') taskDetail(data);
@@ -174,4 +177,15 @@ window.addEventListener('hashchange', () => load());
 document.querySelector('#refresh').onclick = () => load(false);
 // Only overview refreshes automatically. No output polling or hidden-tab traffic.
 setInterval(() => { if (!busy && !document.hidden && !main.contains(document.activeElement) && (!location.hash || location.hash === '#overview')) load(false); }, 5000);
-load(false);
+async function start() {
+  try {
+    const response = await fetch('/presentation.json', {signal: AbortSignal.timeout(4000), cache:'no-store'});
+    if (!response.ok) throw new Error('Presentation unavailable');
+    const data = await response.json(); presentation = data.labels; commandLabels = data.command_states || {};
+    document.documentElement.lang = data.language;
+    document.documentElement.dir = data.language === 'ar' ? 'rtl' : 'ltr';
+    for (const node of document.querySelectorAll('[data-i18n]')) node.textContent = translated(node.dataset.i18n, node.textContent);
+  } catch { /* English fallback remains usable if presentation is unavailable. */ }
+  load(false);
+}
+start();
