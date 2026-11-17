@@ -5,3 +5,4 @@ pub mod lifetime;
 pub mod reconcile;
 pub mod operations;
 pub mod operation_repair;
+pub mod recovery;

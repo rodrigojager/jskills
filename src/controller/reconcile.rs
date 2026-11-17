@@ -18,6 +18,7 @@ pub fn attempts(workspace: &Workspace, store: &mut Store, run: &str) -> Result<(
     for (id, task) in rows {
         if custody::reconcile(&workspace.data.join("attempts").join(&id)).unwrap_or(false) {
             store.retire(run, &task, &id, None, true)?;
+            super::recovery::after_retire(workspace, store, run, &task, &id)?;
         } else {
             store
                 .conn

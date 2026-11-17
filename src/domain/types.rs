@@ -26,6 +26,8 @@ pub enum CompletionPolicy {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Task {
+    #[serde(default)]
+    pub recovery: crate::domain::recovery::Policy,
     /// Explicit, attributable permission for incomplete discovery, never invalidity.
     #[serde(default)]
     pub unknown_capabilities: Option<crate::executors::catalog::UnknownException>,

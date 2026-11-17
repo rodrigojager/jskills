@@ -127,6 +127,7 @@ impl Store {
         } else {
             ensure!(version == schema::VERSION, "unsupported runtime schema");
         }
+        crate::controller::recovery::initialize(&conn)?;
         Ok(Self { conn })
     }
 
@@ -148,6 +149,7 @@ impl Store {
                 "INSERT INTO tasks(run_id,id,ordinal,spec,state) VALUES(?1,?2,?3,?4,'pending')",
                 params![run, task.id, ordinal as i64, serde_json::to_string(task)?],
             )?;
+            crate::controller::recovery::ensure_lineage(&tx, run, &task.id, &task.recovery)?;
         }
         for (ordinal, operation) in plan.operations.iter().enumerate() {
             tx.execute("INSERT INTO operations(run_id,id,ordinal,spec,required,revision,state,request_id) VALUES(?1,?2,?3,?4,?5,?6,'pending',?7)", params![run, operation.id, ordinal as i64, serde_json::to_string(operation)?, operation.required, operation.revision, format!("operation-{}", uuid::Uuid::new_v4())])?;
@@ -233,6 +235,7 @@ impl Store {
             "INSERT INTO attempts(id,run_id,task_id,state,effective_profile) VALUES(?1,?2,?3,'launch_intent',?4)",
             [attempt, run, task, snapshot],
         )?;
+        crate::controller::recovery::reserve(&tx, run, task, attempt)?;
         tx.execute(
             "UPDATE tasks SET state='running' WHERE run_id=?1 AND id=?2",
             [run, task],
@@ -254,17 +257,22 @@ impl Store {
             self.conn
                 .query_row("SELECT plan FROM runs WHERE id=?1", [run], |r| r.get(0))?;
         let plan: Plan = serde_json::from_str(&plan)?;
-        let (effective_task, snapshot) =
+        let (mut effective_task, mut snapshot) =
             crate::domain::profiles::resolve(workspace, task, &plan.profile_defaults)?;
+        crate::controller::recovery::configure(&self.conn, run, &mut effective_task)?;
+        snapshot.values["recovery_executor"] = serde_json::to_value(&effective_task.executor)?;
         self.intent_with_profile(run, &task.id, attempt, &serde_json::to_string(&snapshot)?)?;
         Ok(effective_task)
     }
 
     pub fn launched(&self, attempt: &str, pid: u32) -> Result<()> {
-        self.conn.execute(
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
             "UPDATE attempts SET state='running',pid=?2 WHERE id=?1 AND state='launch_intent'",
             params![attempt, pid],
         )?;
+        crate::controller::recovery::dispatched(&tx, attempt)?;
+        tx.commit()?;
         Ok(())
     }
 

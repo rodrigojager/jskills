@@ -1,7 +1,7 @@
 //! Explicit, agent-directed corrective stages with durable bounded lineage.
 use crate::{
     domain::{
-        operation_lineage::{CORRECTION_LIMIT, Recheck, matches_check, overlaps, valid_input},
+        operation_lineage::{Recheck, matches_check, overlaps, valid_input},
         operations::{Dependency, Operation, Stage},
         types::Plan,
     },
@@ -41,9 +41,43 @@ fn responsible(op: &Operation) -> Result<&str> {
 }
 
 pub fn facts(conn: &Connection, run: &str, id: &str) -> Result<Value> {
+    let (op, _, _) = operation(conn, run, id)?;
+    // A schema-compatible database may predate the writer-only ledger setup.
+    // Reading it must expose unavailable evidence without initializing anything.
+    let initialized: bool = conn.query_row("SELECT count(*)=2 FROM sqlite_master WHERE type='table' AND name IN ('recovery_lineages','recovery_invocations')", [], |r| r.get(0))?;
+    let worker = responsible(&op).ok();
+    let shared = if initialized {
+        worker
+            .map(|worker| {
+                let exists: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM recovery_lineages WHERE run_id=?1 AND task_id=?2)",
+                    [run, worker],
+                    |r| r.get(0),
+                )?;
+                if exists {
+                    crate::controller::recovery::ledger(conn, run, worker).map(Some)
+                } else {
+                    Ok(None)
+                }
+            })
+            .transpose()?
+            .flatten()
+    } else {
+        None
+    };
+    let ledger_state = if worker.is_none() {
+        "not_applicable"
+    } else if shared.is_some() {
+        "available"
+    } else {
+        "not_initialized"
+    };
+    let limit = shared.as_ref().map(|ledger| ledger.work_limit);
     let exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='operation_repair_cycles')", [], |r| r.get(0))?;
     if !exists {
-        return Ok(json!({"limit":CORRECTION_LIMIT,"cycles":[],"work_stages_charged":0}));
+        return Ok(
+            json!({"limit":limit,"allowance_scope":"task_lineage","ledger_state":ledger_state,"shared_ledger":shared,"cycles":[],"work_stages_charged":0}),
+        );
     }
     let mut statement = conn.prepare("SELECT cycle,worker,revision,summary,recheck,outcome FROM operation_repair_cycles WHERE run_id=?1 AND operation_id=?2 ORDER BY cycle")?;
     let cycles = statement.query_map([run,id], |r| Ok(json!({"cycle":r.get::<_,u32>(0)?,"worker":r.get::<_,String>(1)?,"revision":r.get::<_,String>(2)?,"summary":r.get::<_,Option<String>>(3)?,"recheck":r.get::<_,Option<String>>(4)?,"outcome":r.get::<_,Option<String>>(5)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -51,7 +85,7 @@ pub fn facts(conn: &Connection, run: &str, id: &str) -> Result<Value> {
     let mut statement = conn.prepare("SELECT m.id,m.request_id,m.state,m.exit_code,c.cycle FROM managed_commands m LEFT JOIN operation_repair_commands c ON c.command_id=m.id WHERE m.run_id=?1 AND json_extract(m.spec,'$.operation')=?2 ORDER BY m.rowid")?;
     let commands = statement.query_map([run,id],|r| Ok(json!({"command_id":r.get::<_,String>(0)?,"request_id":r.get::<_,String>(1)?,"state":r.get::<_,String>(2)?,"exit_code":r.get::<_,Option<i32>>(3)?,"cycle":r.get::<_,Option<u32>>(4)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(
-        json!({"limit":CORRECTION_LIMIT,"cycles":cycles,"work_stages_charged":charged,"commands":commands}),
+        json!({"limit":limit,"allowance_scope":"task_lineage","ledger_state":ledger_state,"shared_ledger":shared,"cycles":cycles,"work_stages_charged":charged,"commands":commands}),
     )
 }
 
@@ -97,12 +131,14 @@ pub fn begin(store: &Store, run: &str, id: &str, worker: &str, request: &str) ->
         [run, id],
         |r| r.get(0),
     )?;
-    ensure!(
-        count < CORRECTION_LIMIT,
-        "logical operation correction allowance exhausted"
-    );
     let cycle = count + 1;
     let tx = store.conn.unchecked_transaction()?;
+    // The shared task allowance deliberately replaces the former per-operation
+    // limit. A different operation identity cannot replenish corrective work.
+    ensure!(
+        crate::controller::recovery::work_available(&tx, run, worker)?,
+        "task lineage work allowance exhausted"
+    );
     tx.execute("INSERT INTO operation_repair_cycles(run_id,operation_id,cycle,request_id,worker,revision) VALUES(?1,?2,?3,?4,?5,?6)",params![run,id,cycle,request,worker,revision])?;
     tx.execute(
         "UPDATE operations SET state='repairing' WHERE run_id=?1 AND id=?2",

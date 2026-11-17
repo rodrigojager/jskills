@@ -262,6 +262,7 @@ pub fn next(
         let task: Task = serde_json::from_str(spec)?;
         if !task.admission.enabled
             || !task.admission.allowance
+            || !super::recovery::eligible(&store.conn, run, id)?
             || task.admission.cooldown_until_ms > now_ms()
             || !task
                 .depends_on
@@ -274,6 +275,13 @@ pub fn next(
         let current: bool = store.conn.query_row("SELECT EXISTS(SELECT 1 FROM attempts WHERE run_id=?1 AND task_id=?2 AND state IN ('launch_intent','running','uncertain'))", [run,id], |r|r.get(0))?;
         if current {
             continue;
+        }
+        let has_commands: bool = store.conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='managed_commands')", [], |r| r.get(0))?;
+        if has_commands {
+            let live: bool = store.conn.query_row("SELECT EXISTS(SELECT 1 FROM managed_commands WHERE run_id=?1 AND task_id=?2 AND state IN ('intent','running','stopping','unknown'))", [run,id], |r|r.get(0))?;
+            if live {
+                continue;
+            }
         }
         // Configuration failures stop this task before reserving any resource.
         if let Err(error) =

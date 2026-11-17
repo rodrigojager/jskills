@@ -32,6 +32,7 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
     store.check_checkout(run, &workspace.checkout)?;
     let mut commands = crate::controller::commands::Service::new(workspace, &store)?;
     super::reconcile::attempts(workspace, &mut store, run)?;
+    super::recovery::reconcile(workspace, &store, run)?;
     super::admission::reconcile(workspace, &store, run)?;
     let unknown: bool = store.conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM managed_commands WHERE run_id=?1 AND state='unknown')",
@@ -183,6 +184,7 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
                     }
                     store.retire(run, &current.task, &current.id, exit, false)?;
                 }
+                super::recovery::after_retire(workspace, &store, run, &current.task, &current.id)?;
                 super::admission::release(workspace, run, &current.task, &current.id)?;
                 retired.push(current.id.clone());
             }
@@ -243,21 +245,29 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
                     }
                 }
                 Err(error) => {
-                    if crate::execution::custody::reconcile(
-                        &workspace.data.join("attempts").join(&attempt),
-                    )
-                    .unwrap_or(false)
-                    {
+                    if super::recovery::launch_failure(
+                        workspace,
+                        &store,
+                        run,
+                        &task.id,
+                        &attempt,
+                        &format!("{error:#}"),
+                    )? {
                         store.retire(run, &task.id, &attempt, None, false)?;
+                        super::recovery::after_retire(workspace, &store, run, &task.id, &attempt)?;
                         super::admission::release(workspace, run, &task.id, &attempt)?;
                     } else {
                         store.conn.execute(
                             "UPDATE attempts SET state='uncertain' WHERE id=?1",
                             [&attempt],
                         )?;
+                        store.set_run_state(run, "custody_unknown")?;
+                        return Err(error.context(
+                            "executor launch custody is unknown; reconcile before admission",
+                        ));
                     }
-                    store.set_run_state(run, "incomplete")?;
-                    return Err(error.context("executor could not launch; task needs intervention"));
+                    // A confirmed empty task launch failure is task-local. Keep
+                    // supervising independent active workers and pending tasks.
                 }
             }
         }
