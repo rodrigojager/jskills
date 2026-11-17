@@ -1,5 +1,6 @@
 pub mod activity;
 pub mod catalog;
+pub mod clean;
 pub mod decisions;
 pub mod doctor;
 pub mod exec;
@@ -49,6 +50,8 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Action {
+    /// Inventory historical run data; execute only an unchanged approved inventory.
+    Clean(clean::Clean),
     /// Watch persisted progress without scheduling or control capabilities.
     Watch(watch::Watch),
     /// Consume the versioned read contract used by CLI, terminal and HTTP.
@@ -206,6 +209,7 @@ pub fn execute() -> Result<i32> {
         action => {
             let workspace = Workspace::resolve(&cli.root, cli.data_dir.as_deref())?;
             match action {
+                Action::Clean(args) => clean::execute(&workspace, args),
                 Action::Read(args) => read::execute(&workspace, args),
                 Action::Watch(args) => watch::execute(&workspace, args, cli.json),
                 Action::Runs(args) => read::print(&workspace, &args.request(View::Runs)),
