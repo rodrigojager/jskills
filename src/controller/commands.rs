@@ -402,6 +402,7 @@ impl Service {
                         .context("command deadline is out of range")
                 })
                 .transpose()?;
+            super::checkpoints::capture_check_inputs(&store.conn, &self.workspace, &spec, &id)?;
             store.conn.execute(
                 "UPDATE managed_commands SET state='intent' WHERE id=?1 AND state='queued'",
                 [&id],

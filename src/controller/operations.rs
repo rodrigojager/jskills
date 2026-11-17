@@ -14,6 +14,8 @@ use std::collections::HashMap;
 
 #[derive(Debug, Serialize)]
 pub struct OperationStatus {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<serde_json::Value>,
     pub id: String,
     pub state: String,
     pub required: bool,
@@ -60,6 +62,11 @@ pub fn read(conn: &Connection, run: &str) -> Result<Vec<OperationStatus>> {
                 _ => None,
             });
             Ok(OperationStatus {
+                checkpoint: op
+                    .checkpoint
+                    .as_ref()
+                    .map(|declaration| super::checkpoints::status(conn, run, &id, declaration))
+                    .transpose()?,
                 id,
                 state,
                 required: op.required,

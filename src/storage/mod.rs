@@ -162,6 +162,7 @@ impl Store {
         for (ordinal, operation) in plan.operations.iter().enumerate() {
             tx.execute("INSERT INTO operations(run_id,id,ordinal,spec,required,revision,state,request_id) VALUES(?1,?2,?3,?4,?5,?6,'pending',?7)", params![run, operation.id, ordinal as i64, serde_json::to_string(operation)?, operation.required, operation.revision, format!("operation-{}", uuid::Uuid::new_v4())])?;
         }
+        crate::controller::checkpoints::capture_baselines(&tx, workspace, run, plan)?;
         tx.execute(
             "INSERT INTO journal(run_id,event,detail) VALUES(?1,'imported',?2)",
             params![run, "explicit judgment completion policy"],

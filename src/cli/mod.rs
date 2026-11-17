@@ -1,5 +1,6 @@
 pub mod activity;
 pub mod catalog;
+pub mod checkpoint;
 pub mod clean;
 pub mod decisions;
 pub mod doctor;
@@ -50,6 +51,8 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Action {
+    /// Review or explicitly apply a declared scoped Git checkpoint.
+    Checkpoint(checkpoint::Checkpoint),
     /// Inventory historical run data; execute only an unchanged approved inventory.
     Clean(clean::Clean),
     /// Watch persisted progress without scheduling or control capabilities.
@@ -209,6 +212,7 @@ pub fn execute() -> Result<i32> {
         action => {
             let workspace = Workspace::resolve(&cli.root, cli.data_dir.as_deref())?;
             match action {
+                Action::Checkpoint(args) => checkpoint::execute(&workspace, args),
                 Action::Clean(args) => clean::execute(&workspace, args),
                 Action::Read(args) => read::execute(&workspace, args),
                 Action::Watch(args) => watch::execute(&workspace, args, cli.json),

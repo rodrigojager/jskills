@@ -386,6 +386,7 @@ pub fn preview_with(
                 "'queued','stopped','exited','launch_failed'",
             ),
             ("reviewer_calls", "'completed','failed','stale','stopped'"),
+            ("checkpoint_receipts", "'applied'"),
         ] {
             if unresolved(conn, name, &id, terminal)? {
                 blockers.push(format!(

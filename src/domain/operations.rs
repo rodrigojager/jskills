@@ -63,6 +63,9 @@ pub struct Operation {
     pub depends_on: Vec<Dependency>,
     pub initial: Invocation,
     pub repair_task: Option<String>,
+    /// Optional explicit source-control checkpoint, applied only by the checkpoint CLI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<crate::controller::checkpoints::Declaration>,
 }
 
 pub fn task_checks<'a>(plan: &'a Plan, task: &'a str) -> impl Iterator<Item = &'a Operation> {
@@ -79,6 +82,9 @@ pub fn validate(plan: &Plan) -> Result<()> {
     let tasks: HashSet<_> = plan.tasks.iter().map(|t| t.id.as_str()).collect();
     let mut operations = HashSet::new();
     for op in &plan.operations {
+        if let Some(checkpoint) = &op.checkpoint {
+            crate::controller::checkpoints::validate(op, checkpoint)?;
+        }
         super::validation::identifier(&op.id)?;
         ensure!(
             operations.insert(op.id.as_str()),

@@ -1,6 +1,7 @@
 pub mod activity;
 pub mod admission;
 pub mod clock;
+pub mod checkpoints;
 pub mod cleanup;
 pub mod commands;
 pub mod cooldowns;
