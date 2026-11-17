@@ -49,9 +49,10 @@ pub fn facts(conn: &Connection, run: &str, id: &str) -> Result<Value> {
     let shared = if initialized {
         worker
             .map(|worker| {
+                let root = crate::controller::graph::root(conn, run, worker)?;
                 let exists: bool = conn.query_row(
                     "SELECT EXISTS(SELECT 1 FROM recovery_lineages WHERE run_id=?1 AND task_id=?2)",
-                    [run, worker],
+                    [run, root.as_str()],
                     |r| r.get(0),
                 )?;
                 if exists {
@@ -149,7 +150,7 @@ pub fn begin(store: &Store, run: &str, id: &str, worker: &str, request: &str) ->
         "INSERT INTO journal(run_id,task_id,event,detail) VALUES(?1,?2,'operation_work_stage',?3)",
         params![
             run,
-            worker,
+            crate::controller::graph::root(&tx, run, worker)?,
             json!({"operation":id,"cycle":cycle}).to_string()
         ],
     )?;

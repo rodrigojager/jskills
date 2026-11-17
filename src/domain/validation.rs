@@ -22,8 +22,29 @@ pub fn validate(plan: &Plan) -> Result<()> {
         "unsupported schema_version (expected 1)"
     );
     ensure!(!plan.tasks.is_empty(), "plan must contain tasks");
+    let mut requirements = HashSet::new();
+    for requirement in &plan.requirements {
+        identifier(&requirement.id)?;
+        ensure!(
+            !requirement.text.trim().is_empty(),
+            "requirement needs original text"
+        );
+        ensure!(
+            requirements.insert(&requirement.id),
+            "duplicate requirement {}",
+            requirement.id
+        );
+    }
     let mut tasks = HashMap::new();
     for task in &plan.tasks {
+        let mut mapped = HashSet::new();
+        for id in &task.requirements {
+            ensure!(
+                requirements.contains(id) && mapped.insert(id),
+                "task {} has unknown or duplicate requirement {id}",
+                task.id
+            );
+        }
         super::reviews::validate(task.estimate_seconds, &task.reviews)?;
         if let super::types::Executor::Profile { alias, overrides } = &task.executor {
             identifier(alias)?;
@@ -62,6 +83,15 @@ pub fn validate(plan: &Plan) -> Result<()> {
         visit(task, &tasks, &mut visiting, &mut visited)?;
     }
     super::operations::validate(plan)?;
+    for requirement in &plan.requirements {
+        ensure!(
+            plan.tasks
+                .iter()
+                .any(|task| task.requirements.contains(&requirement.id)),
+            "requirement {} needs explicit work coverage",
+            requirement.id
+        );
+    }
     Ok(())
 }
 

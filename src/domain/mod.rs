@@ -1,3 +1,4 @@
+pub mod graph;
 pub mod operation_lineage;
 pub mod operations;
 pub mod profiles;

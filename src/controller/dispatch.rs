@@ -98,7 +98,21 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
             stream.set_read_timeout(Some(Duration::from_millis(100)))?;
             stream.set_write_timeout(Some(Duration::from_millis(100)))?;
             let mut retry = None;
+            let mut graph = None;
             let result: Result<bool> = (|| match transport::read_message(&mut stream)? {
+                Request::Graph {
+                    token,
+                    run: requested,
+                    proposal,
+                } => {
+                    ensure!(
+                        !stopped && token == endpoint.token && requested == run,
+                        "invalid graph control scope"
+                    );
+                    graph = Some(super::graph::propose(workspace, &store, run, &proposal)?);
+                    scheduling_requested = true;
+                    Ok(false)
+                }
                 Request::Log {
                     token,
                     attempt,
@@ -176,12 +190,14 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
             })();
             let response = match result {
                 Ok(duplicate) => Response {
+                    graph,
                     retry,
                     accepted: true,
                     duplicate,
                     error: None,
                 },
                 Err(error) => Response {
+                    graph: None,
                     retry: None,
                     accepted: false,
                     duplicate: false,

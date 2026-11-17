@@ -5,6 +5,7 @@ use std::path::Path;
 
 #[derive(Debug, Serialize)]
 pub struct Status {
+    pub graph: serde_json::Value,
     pub run: String,
     pub state: String,
     pub complete: bool,
@@ -16,6 +17,7 @@ pub struct Status {
 
 #[derive(Debug, Serialize)]
 pub struct TaskStatus {
+    pub lineage_root: String,
     pub cooldown: serde_json::Value,
     pub id: String,
     pub state: String,
@@ -84,6 +86,7 @@ pub fn read(path: &Path, run: &str) -> Result<Status> {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         tasks.push(TaskStatus {
+            lineage_root: crate::controller::graph::root(&conn, run, &id)?,
             cooldown: crate::controller::cooldowns::read(
                 &conn,
                 run,
@@ -97,16 +100,30 @@ pub fn read(path: &Path, run: &str) -> Result<Status> {
     }
     let operations = crate::controller::operations::read(&conn, run)?;
     let development_complete = !tasks.is_empty()
-        && tasks
-            .iter()
-            .all(|t| matches!(t.state.as_str(), "completed" | "verification_pending"));
+        && tasks.iter().all(|t| {
+            matches!(
+                t.state.as_str(),
+                "completed" | "verification_pending" | "superseded"
+            )
+        });
     let verification_complete = operations
         .iter()
         .filter(|op| op.required)
         .all(|op| op.state == "passed");
-    let complete =
-        !tasks.is_empty() && tasks.iter().all(|t| t.state == "completed") && verification_complete;
+    let graph = crate::controller::graph::projection(&conn, run)?;
+    let coverage_complete = graph["coverage"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|r| r["satisfied"] == true);
+    let complete = !tasks.is_empty()
+        && tasks
+            .iter()
+            .all(|t| matches!(t.state.as_str(), "completed" | "superseded"))
+        && verification_complete
+        && coverage_complete;
     Ok(Status {
+        graph,
         run: run.to_owned(),
         state,
         complete,

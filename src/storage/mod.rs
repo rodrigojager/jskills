@@ -127,6 +127,7 @@ impl Store {
         } else {
             ensure!(version == schema::VERSION, "unsupported runtime schema");
         }
+        crate::controller::graph::initialize(&conn)?;
         crate::controller::recovery::initialize(&conn)?;
         crate::controller::cooldowns::initialize(&conn)?;
         crate::controller::activity::initialize(&conn)?;
@@ -162,6 +163,10 @@ impl Store {
         tx.execute(
             "INSERT INTO journal(run_id,event,detail) VALUES(?1,'imported',?2)",
             params![run, "explicit judgment completion policy"],
+        )?;
+        tx.execute(
+            "INSERT INTO graph_baselines(run_id,original_plan) VALUES(?1,?2)",
+            params![run, serde_json::to_string(plan)?],
         )?;
         tx.commit()?;
         Ok(())

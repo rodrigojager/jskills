@@ -32,6 +32,7 @@ pub fn initialize(conn: &Connection) -> Result<()> {
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for (run, id, spec) in tasks {
+        let root = super::graph::root(conn, &run, &id)?;
         let task: Task = serde_json::from_str(&spec)?;
         ensure_lineage(conn, &run, &id, &task.recovery)?;
         let mut attempts = conn.prepare(
@@ -44,13 +45,16 @@ pub fn initialize(conn: &Connection) -> Result<()> {
             .enumerate()
         {
             let (attempt, state) = row?;
-            conn.execute("INSERT OR IGNORE INTO recovery_invocations(attempt_id,run_id,task_id,kind,state,detail) VALUES(?1,?2,?3,?4,?5,'adopted existing immutable attempt')",params![attempt,run,id,if index==0 {"initial"} else {"work"},if matches!(state.as_str(),"launch_intent"|"uncertain") {"uncertain"} else {"dispatched"}])?;
+            conn.execute("INSERT OR IGNORE INTO recovery_invocations(attempt_id,run_id,task_id,kind,state,detail) VALUES(?1,?2,?3,?4,?5,'adopted existing immutable attempt')",params![attempt,run,root,if index==0 && root==id {"initial"} else {"work"},if matches!(state.as_str(),"launch_intent"|"uncertain") {"uncertain"} else {"dispatched"}])?;
         }
     }
     Ok(())
 }
 
 pub fn ensure_lineage(conn: &Connection, run: &str, task: &str, policy: &Policy) -> Result<()> {
+    if super::graph::root(conn, run, task)? != task {
+        return Ok(());
+    }
     conn.execute(
         "INSERT OR IGNORE INTO recovery_lineages(run_id,task_id,policy) VALUES(?1,?2,?3)",
         params![run, task, serde_json::to_string(policy)?],
@@ -61,6 +65,8 @@ pub fn ensure_lineage(conn: &Connection, run: &str, task: &str, policy: &Policy)
 /// Reserved and uncertain launches count against available allowance until a
 /// definite prelaunch failure releases them. Stage entries share the work count.
 pub fn ledger(conn: &Connection, run: &str, task: &str) -> Result<Ledger> {
+    let root = super::graph::root(conn, run, task)?;
+    let task = root.as_str();
     let (policy,work_grants,infra_grants): (String,u32,u32) = conn.query_row("SELECT policy,work_grants,infrastructure_grants FROM recovery_lineages WHERE run_id=?1 AND task_id=?2",[run,task],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
     let policy: Policy = serde_json::from_str(&policy)?;
     let count = |kind: &str| -> Result<u32> {
@@ -81,7 +87,45 @@ pub fn work_available(conn: &Connection, run: &str, task: &str) -> Result<bool> 
     Ok(ledger.work < ledger.work_limit)
 }
 
+fn has_splits(conn: &Connection, run: &str, root: &str) -> Result<bool> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='graph_ancestry')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !exists {
+        return Ok(false);
+    }
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM graph_ancestry WHERE run_id=?1 AND root_id=?2)",
+        [run, root],
+        |r| r.get(0),
+    )?)
+}
+pub fn next_kind(conn: &Connection, run: &str, task: &str) -> Result<String> {
+    let root = super::graph::root(conn, run, task)?;
+    let kind: String = conn.query_row(
+        "SELECT next_kind FROM recovery_lineages WHERE run_id=?1 AND task_id=?2",
+        [run, &root],
+        |r| r.get(0),
+    )?;
+    let own_attempt: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM attempts WHERE run_id=?1 AND task_id=?2 AND state<>'launch_intent')",[run,task],|r|r.get(0))?;
+    Ok(
+        if has_splits(conn, run, &root)?
+            && ledger(conn, run, &root)?.initial > 0
+            && (kind == "initial" || (kind == "infrastructure" && !own_attempt))
+        {
+            "work".into()
+        } else {
+            kind
+        },
+    )
+}
+
 pub fn eligible(conn: &Connection, run: &str, task: &str) -> Result<bool> {
+    let requested = task;
+    let root = super::graph::root(conn, run, task)?;
+    let task = root.as_str();
     let Some(kind): Option<String> = conn
         .query_row(
             "SELECT next_kind FROM recovery_lineages WHERE run_id=?1 AND task_id=?2",
@@ -91,6 +135,11 @@ pub fn eligible(conn: &Connection, run: &str, task: &str) -> Result<bool> {
         .optional()?
     else {
         return Ok(true);
+    };
+    let kind = if has_splits(conn, run, task)? {
+        next_kind(conn, run, requested)?
+    } else {
+        kind
     };
     let ledger = ledger(conn, run, task)?;
     Ok(match kind.as_str() {
@@ -119,7 +168,9 @@ pub fn reserve(conn: &Connection, run: &str, task: &str, attempt: &str) -> Resul
             "reconcile owned task commands before worker replacement"
         );
     }
-    conn.execute("INSERT INTO recovery_invocations(attempt_id,run_id,task_id,kind,state,source_attempt) SELECT ?3,run_id,task_id,next_kind,'reserved',resume_attempt FROM recovery_lineages WHERE run_id=?1 AND task_id=?2",[run,task,attempt])?;
+    let root = super::graph::root(conn, run, task)?;
+    let kind = next_kind(conn, run, task)?;
+    conn.execute("INSERT INTO recovery_invocations(attempt_id,run_id,task_id,kind,state,source_attempt) SELECT ?3,run_id,task_id,?4,'reserved',resume_attempt FROM recovery_lineages WHERE run_id=?1 AND task_id=?2",[run,root.as_str(),attempt,kind.as_str()])?;
     Ok(())
 }
 
@@ -132,10 +183,11 @@ pub fn dispatched(conn: &Connection, attempt: &str) -> Result<()> {
 /// Override only controller-managed recovery. Explicit first-invocation resume
 /// stays subject to the adapter's exact same-task verification.
 pub fn configure(conn: &Connection, run: &str, task: &mut Task) -> Result<()> {
+    let root = super::graph::root(conn, run, &task.id)?;
     let Some((kind, previous)): Option<(String, Option<String>)> = conn
         .query_row(
             "SELECT next_kind,resume_attempt FROM recovery_lineages WHERE run_id=?1 AND task_id=?2",
-            [run, &task.id],
+            [run, &root],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?
@@ -146,7 +198,15 @@ pub fn configure(conn: &Connection, run: &str, task: &mut Task) -> Result<()> {
         return Ok(());
     }
     let resume = if kind == "infrastructure" {
-        previous
+        // Shared allowance never confers another task's native session identity.
+        previous.filter(|id| {
+            conn.query_row(
+                "SELECT task_id=?2 FROM attempts WHERE id=?1",
+                [id, &task.id],
+                |r| r.get::<_, bool>(0),
+            )
+            .unwrap_or(false)
+        })
     } else {
         None
     };
@@ -240,10 +300,11 @@ pub fn after_retire(
         break;
     }
     let tx = store.conn.unchecked_transaction()?;
+    let root = super::graph::root(&tx, run, task)?;
     // A repeated reconciliation must not create a different decision.
     let recorded: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM journal WHERE run_id=?1 AND task_id=?2 AND attempt_id=?3 AND event='recovery_decided')",[run,task,attempt],|r|r.get(0))?;
     if !recorded {
-        tx.execute("UPDATE recovery_lineages SET next_kind=?3,resume_attempt=?4 WHERE run_id=?1 AND task_id=?2",params![run,task,if blocked {"blocked"} else {kind.as_str()},resume])?;
+        tx.execute("UPDATE recovery_lineages SET next_kind=?3,resume_attempt=?4 WHERE run_id=?1 AND task_id=?2",params![run,root,if blocked {"blocked"} else {kind.as_str()},resume])?;
         if let Some(hint) = wait_hint {
             blocked |= super::cooldowns::schedule(
                 &tx,

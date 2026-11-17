@@ -2,6 +2,7 @@ pub mod activity;
 pub mod catalog;
 pub mod doctor;
 pub mod exec;
+pub mod graph;
 pub mod operations;
 pub mod profiles;
 pub mod resources;
@@ -44,6 +45,8 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Action {
+    /// Revise pending work while preserving baseline, history and retry ancestry.
+    Graph(graph::Graph),
     /// Commit an attributable log through the current worker scope.
     Log(activity::Log),
     /// Read activity and monotonic duration checkpoints without mutations.
@@ -175,6 +178,7 @@ pub fn execute() -> Result<i32> {
         action => {
             let workspace = Workspace::resolve(&cli.root, cli.data_dir.as_deref())?;
             match action {
+                Action::Graph(args) => graph::execute(&workspace, args),
                 Action::Activity(args) => activity::read(&workspace, args),
                 Action::Retry(args) => retry::execute(&workspace, args),
                 Action::Executors => {

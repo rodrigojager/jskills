@@ -74,6 +74,8 @@ pub fn schedule(
     hint: &Hint,
     now: u64,
 ) -> Result<bool> {
+    let root = super::graph::root(conn, run, task)?;
+    let task = root.as_str();
     let policy: String = conn.query_row(
         "SELECT policy FROM recovery_lineages WHERE run_id=?1 AND task_id=?2",
         [run, task],
@@ -103,6 +105,8 @@ fn exists(conn: &Connection) -> Result<bool> {
 
 /// Includes matching explicit account/model scopes across tasks of this run only.
 pub fn deadline(conn: &Connection, run: &str, task: &str) -> Result<Option<u64>> {
+    let root = super::graph::root(conn, run, task)?;
+    let task = root.as_str();
     if !exists(conn)? {
         return Ok(None);
     }
@@ -151,6 +155,8 @@ pub fn eligible(conn: &Connection, run: &str, task: &str, now: u64) -> Result<bo
 }
 
 pub fn read(conn: &Connection, run: &str, task: &str, now: u64) -> Result<Value> {
+    let root = super::graph::root(conn, run, task)?;
+    let task = root.as_str();
     if !exists(conn)? {
         return Ok(json!({"state":"not_initialized"}));
     }
@@ -211,7 +217,10 @@ pub fn retry(
         |r| r.get(0),
     )?;
     ensure!(
-        !matches!(state.as_str(), "completed" | "verification_pending"),
+        !matches!(
+            state.as_str(),
+            "completed" | "verification_pending" | "superseded"
+        ),
         "completed work cannot be retried"
     );
     let live:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM attempts WHERE run_id=?1 AND task_id=?2 AND state IN ('launch_intent','running','uncertain'))",[run,task],|r|r.get(0))?;
@@ -228,17 +237,14 @@ pub fn retry(
         let live:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM managed_commands WHERE run_id=?1 AND task_id=?2 AND state IN ('intent','running','stopping','unknown'))",[run,task],|r|r.get(0))?;
         ensure!(!live, "owned commands must stop and reconcile first");
     }
-    let mut kind: String = tx.query_row(
-        "SELECT next_kind FROM recovery_lineages WHERE run_id=?1 AND task_id=?2",
-        [run, task],
-        |r| r.get(0),
-    )?;
+    let root = super::graph::root(&tx, run, task)?;
+    let mut kind = super::recovery::next_kind(&tx, run, task)?;
     if kind == "blocked" {
         kind = "infrastructure".into();
     }
     tx.execute(
         "UPDATE recovery_lineages SET next_kind=?3 WHERE run_id=?1 AND task_id=?2",
-        [run, task, &kind],
+        [run, root.as_str(), &kind],
     )?;
     let grant = if !super::recovery::eligible(&tx, run, task)? {
         ensure!(
@@ -250,12 +256,12 @@ pub fn retry(
         } else {
             "UPDATE recovery_lineages SET infrastructure_grants=infrastructure_grants+1 WHERE run_id=?1 AND task_id=?2"
         };
-        tx.execute(sql, [run, task])?;
+        tx.execute(sql, [run, root.as_str()])?;
         Some(kind.clone())
     } else {
         None
     };
-    tx.execute("UPDATE recovery_waits SET state='manual_advanced' WHERE run_id=?1 AND task_id=?2 AND state IN ('waiting','paused')",[run,task])?;
+    tx.execute("UPDATE recovery_waits SET state='manual_advanced' WHERE run_id=?1 AND task_id=?2 AND state IN ('waiting','paused')",[run,root.as_str()])?;
     tx.execute(
         "UPDATE tasks SET state='pending' WHERE run_id=?1 AND id=?2",
         [run, task],
@@ -308,6 +314,16 @@ pub fn retry(
 pub fn consumed(conn: &Connection, attempt: &str) -> Result<()> {
     // A grant becomes consumed only on dispatch; a definite prelaunch failure
     // can reuse it. Invocation rows and grant count still bound uncertain starts.
-    conn.execute("UPDATE manual_retries SET consumed_by=?1 WHERE request_id=(SELECT m.request_id FROM manual_retries m JOIN recovery_invocations i ON i.run_id=m.run_id AND i.task_id=m.task_id AND i.kind=m.granted_kind WHERE i.attempt_id=?1 AND m.consumed_by IS NULL ORDER BY m.rowid LIMIT 1)",[attempt])?;
+    let aliases: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='graph_ancestry')",
+        [],
+        |r| r.get(0),
+    )?;
+    let sql = if aliases {
+        "UPDATE manual_retries SET consumed_by=?1 WHERE request_id=(SELECT m.request_id FROM manual_retries m JOIN recovery_invocations i ON i.run_id=m.run_id AND i.task_id=COALESCE((SELECT root_id FROM graph_ancestry g WHERE g.run_id=m.run_id AND g.task_id=m.task_id),m.task_id) AND i.kind=m.granted_kind WHERE i.attempt_id=?1 AND m.consumed_by IS NULL ORDER BY m.rowid LIMIT 1)"
+    } else {
+        "UPDATE manual_retries SET consumed_by=?1 WHERE request_id=(SELECT m.request_id FROM manual_retries m JOIN recovery_invocations i ON i.run_id=m.run_id AND i.task_id=m.task_id AND i.kind=m.granted_kind WHERE i.attempt_id=?1 AND m.consumed_by IS NULL ORDER BY m.rowid LIMIT 1)"
+    };
+    conn.execute(sql, [attempt])?;
     Ok(())
 }

@@ -12,6 +12,11 @@ const MAX_REQUEST: u64 = 65536;
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
+    Graph {
+        token: String,
+        run: String,
+        proposal: Box<crate::domain::graph::Proposal>,
+    },
     Log {
         token: String,
         attempt: String,
@@ -39,6 +44,8 @@ pub enum Request {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Response {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry: Option<serde_json::Value>,
     pub accepted: bool,

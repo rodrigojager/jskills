@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct Plan {
     #[serde(default)]
+    pub requirements: Vec<super::graph::Requirement>,
+    #[serde(default)]
     pub scheduling: crate::controller::admission::Scheduling,
     #[serde(default)]
     pub profile_defaults: crate::domain::profiles::ProfileConfig,
@@ -26,6 +28,8 @@ pub enum CompletionPolicy {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Task {
+    #[serde(default)]
+    pub requirements: Vec<String>,
     #[serde(default)]
     pub estimate_seconds: Option<u64>,
     #[serde(default)]
