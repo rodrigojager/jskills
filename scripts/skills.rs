@@ -6,10 +6,13 @@ use std::{
 };
 
 pub const AGENTS: &[&str] = &["codex", "claude", "opencode"];
-pub const SKILLS: &[&str] = &["to-jtasks", "jtasks"];
+pub const SKILLS: &[&str] = &["to-jtasks", "jtasks", "estimator"];
 
 fn harness(agent: &str, skill: &str) -> &'static str {
     match (agent, skill) {
+        (_, "estimator") => {
+            "This is a separately invoked estimation workflow. Use the selected harness's documented fresh noninteractive invocation and explicit model/configuration; never resume a planner or task session. The optional Python helper is not part of the standalone Rust CLI runtime."
+        }
         ("codex", "jtasks") => {
             "The controller invokes Codex exec directly. Return the adapter-supplied final JSON schema through the designated native final channel, or use the scoped result client. Tool and helper messages have no completion authority. Resume only an explicitly recorded same-task attempt; never use the last session implicitly."
         }
