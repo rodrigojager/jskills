@@ -263,6 +263,7 @@ pub fn next(
         if !task.admission.enabled
             || !task.admission.allowance
             || !super::recovery::eligible(&store.conn, run, id)?
+            || !super::cooldowns::eligible(&store.conn, run, id, now_ms())?
             || task.admission.cooldown_until_ms > now_ms()
             || !task
                 .depends_on
@@ -313,7 +314,9 @@ pub fn reconcile(workspace: &Workspace, store: &Store, run: &str) -> Result<()> 
         Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
     })? {
         let (id, task) = row?;
-        release(workspace, run, &task, &id)?;
+        if !super::recovery::live_commands(&store.conn, run, &task)? {
+            release(workspace, run, &task, &id)?;
+        }
     }
     // Reserve can precede durable intent. With no intent there was no spawn.
     for held in registry::list(&registry_path(workspace))? {
@@ -338,7 +341,9 @@ pub fn cooling_down(store: &Store, run: &str) -> Result<bool> {
     for task in &plan.tasks {
         if task.admission.enabled
             && task.admission.allowance
-            && task.admission.cooldown_until_ms > now_ms()
+            && (task.admission.cooldown_until_ms > now_ms()
+                || !super::cooldowns::eligible(&store.conn, run, &task.id, now_ms())?)
+            && super::recovery::eligible(&store.conn, run, &task.id)?
         {
             let pending: bool = store.conn.query_row(
                 "SELECT state IN ('pending','interrupted') FROM tasks WHERE run_id=?1 AND id=?2",

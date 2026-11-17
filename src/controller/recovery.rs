@@ -124,6 +124,7 @@ pub fn reserve(conn: &Connection, run: &str, task: &str, attempt: &str) -> Resul
 }
 
 pub fn dispatched(conn: &Connection, attempt: &str) -> Result<()> {
+    super::cooldowns::consumed(conn, attempt)?;
     conn.execute("UPDATE recovery_invocations SET state='dispatched' WHERE attempt_id=?1 AND state IN ('reserved','uncertain')",[attempt])?;
     Ok(())
 }
@@ -190,10 +191,14 @@ pub fn after_retire(
     if launch_state.as_deref() == Some("prelaunch_failed") {
         return Ok(());
     }
+    if live_commands(&store.conn, run, task)? {
+        return Ok(());
+    }
     let mut kind = Allowance::Work;
     let mut resume = None;
     let mut evidence = json!({"reason":"unfinished work or unknown failure","attempt":attempt});
     let mut blocked = false;
+    let mut wait_hint = None;
     for (file, identity) in [
         ("codex-observation.json", "thread_id"),
         ("claude-observation.json", "session_id"),
@@ -212,9 +217,19 @@ pub fn after_retire(
             continue;
         }
         evidence = json!({"observation":value,"attempt":attempt});
+        let hint = serde_json::from_value::<super::cooldowns::Hint>(value["cooldown_hint"].clone())
+            .unwrap_or_default();
         match value["failure_class"].as_str() {
             Some("transient_service_or_connection") => {
                 kind = Allowance::Infrastructure;
+                wait_hint = Some(hint.clone());
+                if value[identity].as_str().is_some_and(|s| !s.is_empty()) {
+                    resume = Some(attempt);
+                }
+            }
+            Some("quota_reset_unknown") if hint.explicit() => {
+                kind = Allowance::Infrastructure;
+                wait_hint = Some(hint);
                 if value[identity].as_str().is_some_and(|s| !s.is_empty()) {
                     resume = Some(attempt);
                 }
@@ -229,6 +244,16 @@ pub fn after_retire(
     let recorded: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM journal WHERE run_id=?1 AND task_id=?2 AND attempt_id=?3 AND event='recovery_decided')",[run,task,attempt],|r|r.get(0))?;
     if !recorded {
         tx.execute("UPDATE recovery_lineages SET next_kind=?3,resume_attempt=?4 WHERE run_id=?1 AND task_id=?2",params![run,task,if blocked {"blocked"} else {kind.as_str()},resume])?;
+        if let Some(hint) = wait_hint {
+            blocked |= super::cooldowns::schedule(
+                &tx,
+                run,
+                task,
+                attempt,
+                &hint,
+                super::admission::now_ms(),
+            )?;
+        }
         let eligible = !blocked && eligible(&tx, run, task)?;
         tx.execute(
             "UPDATE tasks SET state=?3 WHERE run_id=?1 AND id=?2",
@@ -247,6 +272,7 @@ pub fn after_retire(
         tx.execute("INSERT INTO journal(run_id,task_id,attempt_id,event,detail) VALUES(?1,?2,?3,'recovery_decided',?4)",params![run,task,attempt,json!({"kind":kind,"blocked":blocked,"resume_attempt":resume,"evidence":evidence}).to_string()])?;
     }
     tx.commit()?;
+    super::admission::release(workspace, run, task, attempt)?;
     Ok(())
 }
 
@@ -331,4 +357,17 @@ pub fn launch_failure(
     }
     tx.commit()?;
     Ok(empty)
+}
+
+/// Unknown/intent command custody is still live for replacement purposes.
+pub fn live_commands(conn: &Connection, run: &str, task: &str) -> Result<bool> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='managed_commands')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !exists {
+        return Ok(false);
+    }
+    Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM managed_commands WHERE run_id=?1 AND task_id=?2 AND state IN ('intent','running','stopping','unknown'))",[run,task],|r|r.get(0))?)
 }

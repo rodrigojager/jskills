@@ -128,6 +128,7 @@ impl Store {
             ensure!(version == schema::VERSION, "unsupported runtime schema");
         }
         crate::controller::recovery::initialize(&conn)?;
+        crate::controller::cooldowns::initialize(&conn)?;
         Ok(Self { conn })
     }
 

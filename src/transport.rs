@@ -12,12 +12,27 @@ const MAX_REQUEST: u64 = 65536;
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
-    Result { token: String, receipt: Receipt },
-    Stop { token: String, run: String },
+    Result {
+        token: String,
+        receipt: Receipt,
+    },
+    Stop {
+        token: String,
+        run: String,
+    },
+    Retry {
+        token: String,
+        run: String,
+        task: String,
+        reason: String,
+        request_id: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Response {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<serde_json::Value>,
     pub accepted: bool,
     pub duplicate: bool,
     pub error: Option<String>,

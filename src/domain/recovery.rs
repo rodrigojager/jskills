@@ -6,12 +6,17 @@ use serde::{Deserialize, Serialize};
 pub struct Policy {
     pub work_retries: u32,
     pub infrastructure_retries: u32,
+    /// Explicit non-secret routing aliases. Absent scope stays task-local.
+    pub cooldown_scope: Option<crate::controller::cooldowns::Scope>,
+    pub max_wait_seconds: Option<u64>,
 }
 impl Default for Policy {
     fn default() -> Self {
         Self {
             work_retries: 2,
             infrastructure_retries: 5,
+            cooldown_scope: None,
+            max_wait_seconds: None,
         }
     }
 }

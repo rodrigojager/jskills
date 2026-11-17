@@ -54,6 +54,8 @@ pub struct Observation {
     pub raw_stdout: PathBuf,
     pub raw_stderr: PathBuf,
     pub failure_class: Option<String>,
+    #[serde(default)]
+    pub cooldown_hint: crate::controller::cooldowns::Hint,
     pub native_model: Option<String>,
     pub native_permissions: Option<String>,
     pub result_source: Option<String>,
@@ -251,12 +253,14 @@ pub fn observe(dir: &Path, task: &str, attempt: &str) -> Result<(Observation, Op
         raw_stdout: dir.join("stdout.log"),
         raw_stderr: dir.join("stderr.log"),
         failure_class: None,
+        cooldown_hint: Default::default(),
         native_model: None,
         native_permissions: None,
         result_source: None,
     };
     let mut final_value = None;
     let mut initialized = false;
+    let mut quota_rejected = false;
     let mut reader = BufReader::new(File::open(&observation.raw_stdout)?);
     loop {
         let mut bytes = Vec::new();
@@ -303,6 +307,20 @@ pub fn observe(dir: &Path, task: &str, attempt: &str) -> Result<(Observation, Op
                 observation.native_permissions =
                     value["permissionMode"].as_str().map(str::to_owned);
             }
+            (Some("rate_limit_event"), _) => {
+                if initialized && value["session_id"].as_str() == observation.session_id.as_deref()
+                {
+                    // Allowed telemetry clears an older rejection; it never
+                    // creates a recovery decision on its own.
+                    quota_rejected = value["rate_limit_info"]["status"] == "rejected"
+                        && !matches!(
+                            value["rate_limit_info"]["overageStatus"].as_str(),
+                            Some("allowed" | "allowed_warning")
+                        );
+                    observation.cooldown_hint =
+                        crate::controller::cooldowns::Hint::claude_rate_limit(&value);
+                }
+            }
             (Some("result"), _) => {
                 if observation.completed_turn {
                     observation.protocol_error = Some("multiple root native result records".into());
@@ -329,6 +347,12 @@ pub fn observe(dir: &Path, task: &str, attempt: &str) -> Result<(Observation, Op
             ) => observation.activity_records += 1,
             _ => observation.unknown_records += 1,
         }
+    }
+    if quota_rejected
+        && !(observation.completed_turn && observation.protocol_error.is_none())
+        && observation.failure_class.as_deref() != Some("authentication_or_access")
+    {
+        observation.failure_class = Some("quota_reset_unknown".into());
     }
     Ok((observation, final_value))
 }

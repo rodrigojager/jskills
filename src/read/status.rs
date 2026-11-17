@@ -16,6 +16,7 @@ pub struct Status {
 
 #[derive(Debug, Serialize)]
 pub struct TaskStatus {
+    pub cooldown: serde_json::Value,
     pub id: String,
     pub state: String,
     pub attempts: Vec<AttemptStatus>,
@@ -80,6 +81,12 @@ pub fn read(path: &Path, run: &str) -> Result<Status> {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         tasks.push(TaskStatus {
+            cooldown: crate::controller::cooldowns::read(
+                &conn,
+                run,
+                &id,
+                crate::controller::admission::now_ms(),
+            )?,
             id,
             state,
             attempts,

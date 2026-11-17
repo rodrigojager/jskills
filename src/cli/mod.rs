@@ -4,6 +4,7 @@ pub mod exec;
 pub mod operations;
 pub mod profiles;
 pub mod resources;
+pub mod retry;
 use crate::{
     controller,
     domain::{
@@ -44,6 +45,8 @@ pub struct Cli {
 pub enum Action {
     /// Read cached scoped executor metadata without launching discovery helpers.
     Executors,
+    /// Advance task eligibility without clearing recovery history or starting a controller.
+    Retry(retry::Retry),
     /// Read or explicitly refresh scoped discovery metadata; never infer access.
     Catalog(catalog::Catalog),
     /// Read diagnostics without repairs, refresh, credentials or provider calls.
@@ -166,6 +169,7 @@ pub fn execute() -> Result<i32> {
         action => {
             let workspace = Workspace::resolve(&cli.root, cli.data_dir.as_deref())?;
             match action {
+                Action::Retry(args) => retry::execute(&workspace, args),
                 Action::Executors => {
                     println!("{}", catalog::executors(&workspace)?);
                     Ok(0)

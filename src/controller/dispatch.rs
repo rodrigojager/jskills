@@ -61,6 +61,7 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
             commands.stop_all(&store, "controller stopped")?;
         }
         commands.poll(&store)?;
+        super::recovery::reconcile(workspace, &store, run)?;
         // Drain requests before observing exit, so a designated result queued
         // just before process exit cannot be mistaken for missing evidence.
         for _ in 0..32 {
@@ -73,7 +74,30 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
             stream.set_nonblocking(false)?;
             stream.set_read_timeout(Some(Duration::from_millis(100)))?;
             stream.set_write_timeout(Some(Duration::from_millis(100)))?;
+            let mut retry = None;
             let result: Result<bool> = (|| match transport::read_message(&mut stream)? {
+                Request::Retry {
+                    token,
+                    run: requested,
+                    task,
+                    reason,
+                    request_id,
+                } => {
+                    ensure!(
+                        !stopped && token == endpoint.token && requested == run,
+                        "inactive controller or invalid retry scope"
+                    );
+                    retry = Some(super::cooldowns::retry(
+                        workspace,
+                        &store,
+                        run,
+                        &task,
+                        &reason,
+                        &request_id,
+                        true,
+                    )?);
+                    Ok(false)
+                }
                 Request::Result { token, receipt } => {
                     ensure!(!stopped, "controller stopped accepting results");
                     let active = active
@@ -96,11 +120,13 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
             })();
             let response = match result {
                 Ok(duplicate) => Response {
+                    retry,
                     accepted: true,
                     duplicate,
                     error: None,
                 },
                 Err(error) => Response {
+                    retry: None,
                     accepted: false,
                     duplicate: false,
                     error: Some(error.to_string()),
@@ -185,7 +211,9 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
                     store.retire(run, &current.task, &current.id, exit, false)?;
                 }
                 super::recovery::after_retire(workspace, &store, run, &current.task, &current.id)?;
-                super::admission::release(workspace, run, &current.task, &current.id)?;
+                if !super::recovery::live_commands(&store.conn, run, &current.task)? {
+                    super::admission::release(workspace, run, &current.task, &current.id)?;
+                }
                 retired.push(current.id.clone());
             }
         }

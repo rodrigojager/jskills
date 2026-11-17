@@ -78,7 +78,32 @@ fn native(mode: &str) -> Fixture {
 #[test]
 fn five_infrastructure_retries_resume_only_exact_task_session() {
     let f = native("transient");
-    assert_eq!(run(&f)["complete"], true);
+    let mut controller = f
+        .command()
+        .args(["run", "--run", "demo"])
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    for invocation in 1..=5 {
+        f.await_status(|v| {
+            v["tasks"][0]["attempts"].as_array().unwrap().len() == invocation
+                && v["tasks"][0]["cooldown"]["latest"]["state"] == "waiting"
+        });
+        assert!(
+            f.call(&[
+                "retry",
+                "A",
+                "--run",
+                "demo",
+                "--reason",
+                "simulated availability changed"
+            ])
+            .status
+            .success()
+        );
+    }
+    assert!(controller.wait().unwrap().success());
+    assert_eq!(f.snapshot()["complete"], true);
     let calls: Vec<Vec<String>> =
         serde_json::from_slice(&fs::read(f.root.join("calls.json")).unwrap()).unwrap();
     assert_eq!(calls.len(), 6);
