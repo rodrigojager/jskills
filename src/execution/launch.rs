@@ -9,20 +9,29 @@ use std::{
     process::{Child, Command, Stdio},
 };
 
-pub fn fixture(
+pub fn task(
     workspace: &Workspace,
     task: &Task,
     attempt: &str,
     endpoint: SocketAddr,
     token: &str,
 ) -> Result<Child> {
+    let ticket = crate::domain::tickets::write_attempt_ticket(workspace, task, attempt)?;
+    if let Executor::Codex { config } = &task.executor {
+        return crate::executors::codex::launch(
+            workspace, task, config, attempt, endpoint, token, &ticket,
+        );
+    }
     let Executor::Fixture {
         outcome,
         summary,
         delay_ms,
         linger_ms,
         exit_code,
-    } = &task.executor;
+    } = &task.executor
+    else {
+        unreachable!()
+    };
     let output_dir = workspace.data.join("attempts").join(attempt);
     fs::create_dir_all(&output_dir)?;
     let stdout = File::create(output_dir.join("stdout.log"))?;
@@ -47,6 +56,7 @@ pub fn fixture(
         .env("JTASKS_RESULT_TOKEN", token)
         .env("JTASKS_ATTEMPT_ID", attempt)
         .env("JTASKS_TASK_ID", &task.id)
+        .env("JTASKS_TICKET_PATH", ticket)
         .current_dir(&workspace.checkout)
         .stdin(Stdio::null())
         .stdout(stdout)

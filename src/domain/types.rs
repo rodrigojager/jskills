@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 pub struct Plan {
     pub schema_version: u32,
     pub completion: CompletionPolicy,
+    #[serde(default)]
+    pub context: crate::domain::tickets::TicketContext,
     pub tasks: Vec<Task>,
 }
 
@@ -22,11 +24,17 @@ pub struct Task {
     #[serde(default, alias = "dependsOn")]
     pub depends_on: Vec<String>,
     pub executor: Executor,
+    #[serde(default)]
+    pub context: crate::domain::tickets::TicketContext,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Executor {
+    Codex {
+        #[serde(flatten)]
+        config: crate::executors::codex::CodexConfig,
+    },
     Fixture {
         outcome: FixtureOutcome,
         #[serde(default)]

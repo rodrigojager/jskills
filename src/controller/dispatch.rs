@@ -18,6 +18,7 @@ struct Active {
     task: String,
     token: String,
     child: Child,
+    codex: bool,
 }
 
 impl Drop for Active {
@@ -37,6 +38,7 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
         "no runtime database; import a plan first"
     );
     let mut store = Store::open(workspace, &guard)?;
+    let mut commands = crate::controller::commands::Service::new(workspace, &store)?;
     store.check_checkout(run, &workspace.checkout)?;
     ensure!(
         !store.has_unretired(run)?,
@@ -54,6 +56,7 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
     let mut active: Option<Active> = None;
     let mut stopped = false;
     loop {
+        commands.poll(&store)?;
         // Drain requests before observing exit, so a designated result queued
         // just before process exit cannot be mistaken for missing evidence.
         while let Some(mut stream) = accept(&listener)? {
@@ -95,6 +98,9 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
             // A disconnected client does not undo an already durable receipt.
             let _ = transport::write_message(&mut stream, &response);
         }
+        if stopped {
+            commands.stop_all(&store, "controller stopped")?;
+        }
         if let Some(current) = active.as_mut() {
             if stopped {
                 // T01 launches a direct fixture with no descendants. Broader
@@ -103,24 +109,49 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
                     current.child.kill()?;
                 }
                 let exit = current.child.wait()?;
+                if current.codex {
+                    crate::executors::codex::capture_interrupted(
+                        workspace,
+                        &current.task,
+                        &current.id,
+                    )?;
+                }
                 store.retire(run, &current.task, &current.id, exit.code(), true)?;
                 active = None;
             } else if let Some(exit) = current.child.try_wait()? {
+                if current.codex {
+                    crate::executors::codex::finish(
+                        workspace,
+                        &mut store,
+                        run,
+                        &current.task,
+                        &current.id,
+                        exit.success(),
+                    )?;
+                }
                 store.retire(run, &current.task, &current.id, exit.code(), false)?;
                 active = None;
             }
         }
         if active.is_none() {
             if stopped {
+                if commands.has_live() {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
                 break;
             }
             let Some(task) = store.ready(run)? else {
+                if commands.has_live() {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
                 break;
             };
             let attempt = uuid::Uuid::new_v4().to_string();
             let token = uuid::Uuid::new_v4().to_string();
             store.intent(run, &task.id, &attempt)?;
-            match launch::fixture(workspace, &task, &attempt, endpoint.endpoint, &token) {
+            match launch::task(workspace, &task, &attempt, endpoint.endpoint, &token) {
                 Ok(child) => {
                     let pid = child.id();
                     // Retain the owned process even if post-spawn persistence
@@ -130,6 +161,10 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
                         task: task.id.clone(),
                         token,
                         child,
+                        codex: matches!(
+                            task.executor,
+                            crate::domain::types::Executor::Codex { .. }
+                        ),
                     });
                     if let Err(error) = store.launched(&attempt, pid) {
                         let current = active.as_mut().unwrap();
@@ -141,7 +176,7 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
                 Err(error) => {
                     store.retire(run, &task.id, &attempt, None, false)?;
                     store.set_run_state(run, "incomplete")?;
-                    return Err(error.context("fixture could not launch; task needs intervention"));
+                    return Err(error.context("executor could not launch; task needs intervention"));
                 }
             }
         }
