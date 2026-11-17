@@ -1,10 +1,12 @@
 pub mod activity;
 pub mod catalog;
+pub mod decisions;
 pub mod doctor;
 pub mod exec;
 pub mod graph;
 pub mod operations;
 pub mod profiles;
+pub mod questions;
 pub mod resources;
 pub mod retry;
 use crate::{
@@ -45,6 +47,14 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Action {
+    /// Read or record explicit durable routine decisions.
+    Decisions(decisions::Decisions),
+    /// Read structured pending/answered questions without mutations.
+    Questions(questions::Questions),
+    /// Submit a question in explicitly restricted execution; block separately.
+    Ask(questions::Ask),
+    /// Record a management answer; explicit bounded retry resumes stopped work.
+    Answer(questions::AnswerArgs),
     /// Revise pending work while preserving baseline, history and retry ancestry.
     Graph(graph::Graph),
     /// Commit an attributable log through the current worker scope.
@@ -79,6 +89,9 @@ pub enum Action {
     Run {
         #[arg(long)]
         run: String,
+        /// Persist restricted permissions for every worker invocation in this run.
+        #[arg(long)]
+        restricted: bool,
     },
     /// Read an existing database without creating, migrating or repairing it.
     Status {
@@ -125,6 +138,7 @@ pub enum Action {
 pub fn execute() -> Result<i32> {
     let cli = Cli::parse();
     match cli.command {
+        Action::Ask(args) => questions::ask(args),
         Action::Log(args) => activity::log(args),
         Action::Validate { plan } => {
             let plan = load_plan(&plan)?;
@@ -178,6 +192,9 @@ pub fn execute() -> Result<i32> {
         action => {
             let workspace = Workspace::resolve(&cli.root, cli.data_dir.as_deref())?;
             match action {
+                Action::Decisions(args) => decisions::execute(&workspace, args),
+                Action::Questions(args) => questions::read(&workspace, &args.run, true),
+                Action::Answer(args) => questions::answer(&workspace, args),
                 Action::Graph(args) => graph::execute(&workspace, args),
                 Action::Activity(args) => activity::read(&workspace, args),
                 Action::Retry(args) => retry::execute(&workspace, args),
@@ -202,7 +219,9 @@ pub fn execute() -> Result<i32> {
                     );
                     Ok(0)
                 }
-                Action::Run { run } => controller::dispatch::run(&workspace, &run),
+                Action::Run { run, restricted } => {
+                    controller::dispatch::run_with_autonomy(&workspace, &run, restricted)
+                }
                 Action::Status { run } => {
                     let snapshot = status::read(&workspace.database(), &run)?;
                     println!("{}", serde_json::to_string(&snapshot)?);

@@ -9,6 +9,7 @@ pub mod graph;
 pub mod lifetime;
 pub mod operation_repair;
 pub mod operations;
+pub mod questions;
 pub mod reconcile;
 pub mod recovery;
 

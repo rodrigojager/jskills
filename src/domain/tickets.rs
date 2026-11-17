@@ -158,6 +158,34 @@ pub fn write_attempt_ticket(workspace: &Workspace, task: &Task, attempt: &str) -
         .join(attempt)
         .join("ticket.md");
     fs::create_dir_all(path.parent().unwrap())?;
-    fs::write(&path, render(&plan, task, attempt, &facts))?;
+    let profile: String = conn.query_row(
+        "SELECT effective_profile FROM attempts WHERE id=?1",
+        [attempt],
+        |row| row.get(0),
+    )?;
+    let profile: serde_json::Value = serde_json::from_str(&profile)?;
+    let mode = profile["values"]["autonomy"]
+        .as_str()
+        .unwrap_or("autonomous");
+    let instructions = if mode == "restricted" {
+        "For a genuine blocked requirement, submit `jtasks ask --request-id <stable-id> --question <text> --blocked-requirement <requirement> [--option <choice>]`, then submit the designated blocked result and retire. A question alone is not a resumable wait. Management records answers using `jtasks answer`; explicit bounded retry after custody retirement resumes work."
+    } else {
+        "Choose your recommended solution to routine questions and continue. Record concise situation/decision/deviation with `jtasks decisions record --request-id <stable-id> --situation <text> --decision <text> --deviation <text>` (use 'none' for no deviation). Do not wait for routine approval."
+    };
+    let records = crate::controller::questions::read(&conn, &run)?;
+    let same_task: Vec<_> = records
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["task"] == task.id)
+        .collect();
+    fs::write(
+        &path,
+        format!(
+            "{}\n## Effective autonomy: {mode}\n{instructions}\nNative permissions are not an OS sandbox. Scope, required outcomes and budgets remain enforced. Do not invent credentials or facts. Native helper policy inheritance is harness-managed and not guaranteed by jtasks. Keep private reasoning and secrets out of records.\n\nSame-task explicit decisions/questions/answers (journal sequence; attributable claims):\n```json\n{}\n```\n",
+            render(&plan, task, attempt, &facts),
+            serde_json::to_string_pretty(&same_task)?
+        ),
+    )?;
     Ok(path)
 }

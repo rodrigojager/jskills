@@ -24,6 +24,10 @@ struct Active {
 
 /// The only runtime writer: transactions are finished before process/socket waits.
 pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
+    run_with_autonomy(workspace, run, false)
+}
+
+pub fn run_with_autonomy(workspace: &Workspace, run: &str, restricted: bool) -> Result<i32> {
     let mut owner = super::lifetime::Owner::acquire(workspace, run)?;
     ensure!(
         workspace.database().is_file(),
@@ -31,11 +35,14 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
     );
     let mut store = Store::open(workspace, owner.guard())?;
     store.check_checkout(run, &workspace.checkout)?;
+    crate::domain::autonomy::launch(&store.conn, run, restricted)?;
+    super::questions::project(workspace, &store.conn, run)?;
     let mut commands = crate::controller::commands::Service::new(workspace, &store)?;
     let mut clocks = super::clock::Clock::start(&store.conn, run, super::clock::utc_ms())?;
     super::reconcile::attempts(workspace, &mut store, run)?;
     super::reviews::reconcile(workspace, &store, run)?;
     super::recovery::reconcile(workspace, &store, run)?;
+    super::questions::reconcile(&store.conn, run)?;
     super::admission::reconcile(workspace, &store, run)?;
     let unknown: bool = store.conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM managed_commands WHERE run_id=?1 AND state='unknown')",
@@ -100,6 +107,47 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
             let mut retry = None;
             let mut graph = None;
             let result: Result<bool> = (|| match transport::read_message(&mut stream)? {
+                Request::Decision {
+                    token,
+                    attempt,
+                    task,
+                    decision,
+                } => {
+                    ensure!(
+                        !stopped
+                            && active
+                                .iter()
+                                .any(|a| a.id == attempt && a.task == task && a.token == token),
+                        "invalid decision scope or inactive worker"
+                    );
+                    super::questions::decide(workspace, &store, run, &task, &attempt, &decision)
+                }
+                Request::Question {
+                    token,
+                    attempt,
+                    task,
+                    question,
+                } => {
+                    ensure!(
+                        !stopped
+                            && active
+                                .iter()
+                                .any(|a| a.id == attempt && a.task == task && a.token == token),
+                        "invalid question scope or inactive worker"
+                    );
+                    super::questions::ask(workspace, &store, run, &task, &attempt, &question)
+                }
+                Request::Answer {
+                    token,
+                    run: requested,
+                    answer,
+                } => {
+                    ensure!(
+                        !stopped && token == endpoint.token && requested == run,
+                        "invalid answer management scope"
+                    );
+                    super::questions::answer(workspace, &store, run, &answer)
+                }
                 Request::Graph {
                     token,
                     run: requested,
@@ -317,6 +365,7 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
                 }
                 super::reviews::reconcile_actions(workspace, &store, run)?;
                 super::recovery::after_retire(workspace, &store, run, &current.task, &current.id)?;
+                super::questions::reconcile(&store.conn, run)?;
                 if !super::recovery::live_commands(&store.conn, run, &current.task)? {
                     super::admission::release(workspace, run, &current.task, &current.id)?;
                 }

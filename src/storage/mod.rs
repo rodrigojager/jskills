@@ -134,6 +134,8 @@ impl Store {
         crate::controller::clock::initialize(&conn)?;
         crate::controller::due::initialize(&conn)?;
         crate::controller::reviews::initialize(&conn)?;
+        crate::domain::autonomy::initialize(&conn)?;
+        crate::controller::questions::initialize(&conn)?;
         Ok(Self { conn })
     }
 
@@ -270,6 +272,7 @@ impl Store {
         let (mut effective_task, mut snapshot) =
             crate::domain::profiles::resolve(workspace, task, &plan.profile_defaults)?;
         crate::controller::recovery::configure(&self.conn, run, &mut effective_task)?;
+        crate::domain::autonomy::effective(&self.conn, run, &mut effective_task, &mut snapshot)?;
         snapshot.values["recovery_executor"] = serde_json::to_value(&effective_task.executor)?;
         self.intent_with_profile(run, &task.id, attempt, &serde_json::to_string(&snapshot)?)?;
         Ok(effective_task)

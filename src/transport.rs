@@ -12,6 +12,23 @@ const MAX_REQUEST: u64 = 65536;
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
+    Decision {
+        token: String,
+        attempt: String,
+        task: String,
+        decision: crate::domain::autonomy::Decision,
+    },
+    Question {
+        token: String,
+        attempt: String,
+        task: String,
+        question: crate::domain::autonomy::Question,
+    },
+    Answer {
+        token: String,
+        run: String,
+        answer: crate::domain::autonomy::Answer,
+    },
     Graph {
         token: String,
         run: String,
