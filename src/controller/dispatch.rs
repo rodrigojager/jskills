@@ -19,6 +19,7 @@ struct Active {
     codex: bool,
     claude: bool,
     opencode: bool,
+    native: Option<super::activity::NativeCursor>,
 }
 
 /// The only runtime writer: transactions are finished before process/socket waits.
@@ -31,6 +32,7 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
     let mut store = Store::open(workspace, owner.guard())?;
     store.check_checkout(run, &workspace.checkout)?;
     let mut commands = crate::controller::commands::Service::new(workspace, &store)?;
+    let mut clocks = super::clock::Clock::start(&store.conn, run, super::clock::utc_ms())?;
     super::reconcile::attempts(workspace, &mut store, run)?;
     super::recovery::reconcile(workspace, &store, run)?;
     super::admission::reconcile(workspace, &store, run)?;
@@ -55,13 +57,31 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
     store.set_run_state(run, "running")?;
     let mut active: Vec<Active> = Vec::new();
     let mut stopped = false;
+    let mut checker = super::due::Checker::new();
+    let mut scheduling_requested = true;
+    clocks.checkpoint(&store.conn, run)?;
     loop {
         stopped |= super::lifetime::interrupted();
         if stopped {
             commands.stop_all(&store, "controller stopped")?;
         }
+        let before_commands = store.conn.total_changes();
         commands.poll(&store)?;
-        super::recovery::reconcile(workspace, &store, run)?;
+        if store.conn.total_changes() != before_commands {
+            clocks.checkpoint(&store.conn, run)?;
+            scheduling_requested = true;
+        }
+        let due_scan = checker.ready();
+        if due_scan {
+            clocks.checkpoint(&store.conn, run)?;
+            commands.check_deadlines(&store)?;
+            commands.admit_queued(&store)?;
+            // Queue snapshots only. Reviewer consumers admit/recheck and launch
+            // asynchronously; no model or command wait belongs in this scan.
+            let _queued = checker.scan(&store.conn, run)?;
+            super::recovery::reconcile(workspace, &store, run)?;
+            scheduling_requested = true;
+        }
         // Drain requests before observing exit, so a designated result queued
         // just before process exit cannot be mistaken for missing evidence.
         for _ in 0..32 {
@@ -76,6 +96,38 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
             stream.set_write_timeout(Some(Duration::from_millis(100)))?;
             let mut retry = None;
             let result: Result<bool> = (|| match transport::read_message(&mut stream)? {
+                Request::Log {
+                    token,
+                    attempt,
+                    task,
+                    kind,
+                    severity,
+                    content,
+                } => {
+                    ensure!(
+                        !stopped
+                            && active
+                                .iter()
+                                .any(|a| a.id == attempt && a.task == task && a.token == token),
+                        "invalid log scope or inactive worker"
+                    );
+                    let event = super::activity::Event {
+                        actor: super::activity::Actor::Worker,
+                        source: "explicit_worker".into(),
+                        kind,
+                        severity,
+                        content,
+                    };
+                    super::activity::commit(
+                        &store.conn,
+                        run,
+                        &task,
+                        &attempt,
+                        &event,
+                        super::clock::utc_ms(),
+                    )?;
+                    Ok(false)
+                }
                 Request::Retry {
                     token,
                     run: requested,
@@ -87,6 +139,7 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
                         !stopped && token == endpoint.token && requested == run,
                         "inactive controller or invalid retry scope"
                     );
+                    scheduling_requested = true;
                     retry = Some(super::cooldowns::retry(
                         workspace,
                         &store,
@@ -141,6 +194,16 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
         }
         let mut retired = Vec::new();
         for current in &mut active {
+            if let Some(native) = &mut current.native {
+                native.poll(
+                    &store.conn,
+                    &workspace.data.join("attempts").join(&current.id),
+                    run,
+                    &current.task,
+                    &current.id,
+                    super::clock::utc_ms(),
+                )?;
+            }
             if stopped {
                 current.child.request_stop()?;
             }
@@ -154,6 +217,19 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
                 return Err(error);
             }
             if let Some(exit) = observation? {
+                // Capture the entire final bounded backlog before retirement so
+                // final native records retain their live worker attribution.
+                if let Some(native) = &mut current.native {
+                    native.drain(
+                        &store.conn,
+                        &workspace.data.join("attempts").join(&current.id),
+                        run,
+                        &current.task,
+                        &current.id,
+                        super::clock::utc_ms(),
+                    )?;
+                }
+                clocks.checkpoint(&store.conn, run)?;
                 if stopped {
                     if current.opencode {
                         crate::executors::opencode::capture_interrupted(
@@ -218,7 +294,11 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
             }
         }
         active.retain(|a| !retired.contains(&a.id));
-        let operation_progress = if !stopped {
+        if !retired.is_empty() {
+            scheduling_requested = true;
+            clocks.checkpoint(&store.conn, run)?;
+        }
+        let operation_progress = if !stopped && scheduling_requested {
             crate::controller::operations::tick(workspace, &store, run, &mut commands)?
         } else {
             false
@@ -231,7 +311,8 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
             break;
         }
         let mut admitted = false;
-        loop {
+        let admission_checked = scheduling_requested;
+        while scheduling_requested {
             let attempt = uuid::Uuid::new_v4().to_string();
             let Some(task) = super::admission::next(workspace, &store, run, &attempt)? else {
                 break;
@@ -248,6 +329,22 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
             match launch::task(workspace, &task, &attempt, endpoint.endpoint, &token) {
                 Ok(child) => {
                     let pid = child.id();
+                    let executor =
+                        if matches!(task.executor, crate::domain::types::Executor::Codex { .. }) {
+                            Some("codex")
+                        } else if matches!(
+                            task.executor,
+                            crate::domain::types::Executor::Claude { .. }
+                        ) {
+                            Some("claude")
+                        } else if matches!(
+                            task.executor,
+                            crate::domain::types::Executor::OpenCode { .. }
+                        ) {
+                            Some("opencode")
+                        } else {
+                            None
+                        };
                     // Retain the owned process even if post-spawn persistence
                     // fails; never create a second attempt on that uncertainty.
                     active.push(Active {
@@ -255,6 +352,7 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
                         task: task.id.clone(),
                         token,
                         child,
+                        native: None,
                         codex: matches!(
                             task.executor,
                             crate::domain::types::Executor::Codex { .. }
@@ -268,9 +366,17 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
                             crate::domain::types::Executor::OpenCode { .. }
                         ),
                     });
+                    if let Some(executor) = executor {
+                        active.last_mut().unwrap().native =
+                            Some(super::activity::NativeCursor::new(
+                                &workspace.data.join("attempts").join(&attempt),
+                                executor,
+                            )?);
+                    }
                     if let Err(error) = store.launched(&attempt, pid) {
                         return Err(error.context("launch persistence failed; owned cleanup requested and intent retained for reconciliation"));
                     }
+                    clocks.checkpoint(&store.conn, run)?;
                 }
                 Err(error) => {
                     if super::recovery::launch_failure(
@@ -299,7 +405,9 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
                 }
             }
         }
-        if active.is_empty()
+        scheduling_requested = false;
+        if admission_checked
+            && active.is_empty()
             && !commands.has_live()
             && !operation_progress
             && !admitted
@@ -307,8 +415,15 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
         {
             break;
         }
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(
+            if active.is_empty() && !commands.has_live() {
+                100
+            } else {
+                10
+            },
+        ));
     }
+    clocks.checkpoint(&store.conn, run)?;
     crate::controller::operations::reconcile(&store, run)?;
     let snapshot = status::read(&workspace.database(), run)?;
     let state = if stopped {

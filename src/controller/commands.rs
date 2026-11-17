@@ -137,14 +137,21 @@ impl Service {
             |r| r.get(0),
         )?)
     }
-    pub fn poll(&mut self, store: &Store) -> Result<()> {
-        let mut retired = Vec::new();
+    /// Called only by the instance's periodic checker. Process/socket polling
+    /// remains independent I/O observation and owns no task-specific timer.
+    pub fn check_deadlines(&mut self, store: &Store) -> Result<()> {
         for (id, owned) in &mut self.live {
             if owned.deadline.is_some_and(|d| Instant::now() >= d) && !owned.stopping {
                 owned.child.request_stop()?;
                 owned.stopping = true;
                 store.conn.execute("UPDATE managed_commands SET state='stopping',reason='command_deadline' WHERE id=?1", [id])?;
             }
+        }
+        Ok(())
+    }
+    pub fn poll(&mut self, store: &Store) -> Result<()> {
+        let mut retired = Vec::new();
+        for (id, owned) in &mut self.live {
             let observation = owned.child.poll();
             if let Err(error) = observation {
                 store.conn.execute("UPDATE managed_commands SET state='unknown',reason='owned cleanup unconfirmed' WHERE id=?1", [id])?;
@@ -158,6 +165,7 @@ impl Service {
                 retired.push(id.clone());
             }
         }
+        let had_retirement = !retired.is_empty();
         for id in retired {
             self.live.remove(&id);
             self.release_resources(store, &id)?;
@@ -193,7 +201,9 @@ impl Service {
             // Client loss never rolls back accepted launch intent or its receipt.
             let _ = crate::transport::write_message(&mut stream, &reply);
         }
-        self.admit_queued(store)?;
+        if had_retirement {
+            self.admit_queued(store)?;
+        }
         Ok(())
     }
     fn handle(&mut self, store: &Store, action: Action) -> Result<Value> {
@@ -343,7 +353,7 @@ impl Service {
             &format!("command-{id}"),
         )
     }
-    fn admit_queued(&mut self, store: &Store) -> Result<()> {
+    pub fn admit_queued(&mut self, store: &Store) -> Result<()> {
         if self.shutdown || super::lifetime::interrupted() {
             return Ok(());
         }
@@ -475,12 +485,21 @@ pub fn serve(workspace: &Workspace) -> Result<i32> {
     let store = Store::open(workspace, owner.guard())?;
     let mut service = Service::new(workspace, &store)?;
     owner.endpoint(service.endpoint.endpoint)?;
+    let mut checker = super::due::Checker::new();
     while !service.shutdown || service.has_live() {
         if super::lifetime::interrupted() {
             service.stop_all(&store, "controller interrupted")?;
         }
+        if checker.ready() {
+            service.check_deadlines(&store)?;
+            service.admit_queued(&store)?;
+        }
         service.poll(&store)?;
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(if service.has_live() {
+            10
+        } else {
+            100
+        }));
     }
     Ok(0)
 }

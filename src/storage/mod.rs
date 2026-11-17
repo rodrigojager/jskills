@@ -129,6 +129,9 @@ impl Store {
         }
         crate::controller::recovery::initialize(&conn)?;
         crate::controller::cooldowns::initialize(&conn)?;
+        crate::controller::activity::initialize(&conn)?;
+        crate::controller::clock::initialize(&conn)?;
+        crate::controller::due::initialize(&conn)?;
         Ok(Self { conn })
     }
 
@@ -273,6 +276,7 @@ impl Store {
             params![attempt, pid],
         )?;
         crate::controller::recovery::dispatched(&tx, attempt)?;
+        crate::controller::activity::begin(&tx, attempt, crate::controller::clock::utc_ms())?;
         tx.commit()?;
         Ok(())
     }

@@ -12,6 +12,14 @@ const MAX_REQUEST: u64 = 65536;
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
+    Log {
+        token: String,
+        attempt: String,
+        task: String,
+        kind: crate::controller::activity::Kind,
+        severity: crate::controller::activity::Severity,
+        content: Option<String>,
+    },
     Result {
         token: String,
         receipt: Receipt,
