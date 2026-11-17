@@ -12,6 +12,9 @@ One row per folder (and relevant subfolder) of this repository. Keep it portable
 | `src/resources/` | checkout-scoped kernel writer lock |
 | `src/read/`, `src/transport.rs` | read-only projections and scoped local control protocol |
 | `tests/` | focused public CLI and durable receipt scenarios |
+| `skills/source/` | canonical authoring/execution instructions and schema examples |
+| `skills/codex/`, `skills/claude/`, `skills/opencode/` | derived harness instruction packages; no copied runtime core |
+| `scripts/skills.rs` | local deterministic skill build/parity check; never global installation |
 
 ## Initial public contract
 
@@ -55,5 +58,27 @@ parallel capacities and other completion policies arrive in later increments.
 - `README.md`
 - `AGENTS.md` (root, and folders with their own rules, up to the second level)
 - `WORKSPACE.md` (root only)
+- `skills/source/to-jtasks/SKILL.md`
+- `skills/source/to-jtasks/references/authoring.md`
+- `skills/source/jtasks/SKILL.md`
+- `skills/source/jtasks/references/execution.md`
+- `skills/codex/to-jtasks/SKILL.md`
+- `skills/codex/to-jtasks/references/authoring.md`
+- `skills/codex/jtasks/SKILL.md`
+- `skills/codex/jtasks/references/execution.md`
+- `skills/claude/to-jtasks/SKILL.md`
+- `skills/claude/to-jtasks/references/authoring.md`
+- `skills/claude/jtasks/SKILL.md`
+- `skills/claude/jtasks/references/execution.md`
+- `skills/opencode/to-jtasks/SKILL.md`
+- `skills/opencode/to-jtasks/references/authoring.md`
+- `skills/opencode/jtasks/SKILL.md`
+- `skills/opencode/jtasks/references/execution.md`
+
+The listed skill Markdown is shipped product input. Edit canonical `skills/source/`
+only, then compile `scripts/skills.rs` with `rustc --edition 2024` to a workspace
+build directory and invoke it as `skills build <product-root>` or
+`skills check <product-root>`. The generator does not install skills or delete
+unexpected files. Global installation requires separate authorization.
 
 AI working artifacts live outside this repository, in the container's `_work/` folder.

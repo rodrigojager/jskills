@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "completion": "judgment",
+  "operation_placement": "none",
+  "requirements": [
+    {"id": "R1", "text": "Demonstrate a judgment-only task with an attributable summary."}
+  ],
+  "context": {
+    "brief": "Local demonstration only. For a real plan, ask completion and operation placement explicitly before adapting this example.",
+    "configuration": ["Example policy: judgment alone; no operations required."],
+    "limits": ["Fixture executors do not demonstrate real provider account access."]
+  },
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Demonstrate designated judgment completion",
+      "requirements": ["R1"],
+      "context": {
+        "requirements": ["Submit a designated completed outcome and nonempty summary; no checks are required by this example policy."]
+      },
+      "executor": {
+        "kind": "fixture",
+        "outcome": "completed",
+        "summary": "Demonstrated designated judgment completion without invented checks."
+      }
+    }
+  ]
+}

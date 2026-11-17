@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "completion": "judgment",
+  "operation_placement": "mixed",
+  "scheduling": {"task_capacity": 2, "heavy_capacity": 1},
+  "requirements": [
+    {"id": "R1", "text": "Prepare the Rust environment before implementing a deliverable."},
+    {"id": "R2", "text": "Integrate the deliverable and run selected verification."}
+  ],
+  "context": {
+    "brief": "Schema demonstration for a Rust checkout. Ask each real plan's policy explicitly; review these Cargo invocations and replace fixture executors before authorizing work.",
+    "configuration": ["Example policy: judgment plus selected required checks, mixed placement."],
+    "operations": ["Toolchain prerequisite, focused task check, integration group check, final packaging."],
+    "limits": ["This example does not authorize executing Cargo operations or real provider turns."]
+  },
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Implement the first deliverable",
+      "requirements": ["R1"],
+      "admission": {"resources": ["path:src/lib.rs"]},
+      "context": {"requirements": ["Deliver the selected behavior in src/lib.rs."], "limits": ["Preserve existing work."]},
+      "executor": {"kind": "fixture", "outcome": "completed", "summary": "Example first deliverable."}
+    },
+    {
+      "id": "T2",
+      "title": "Integrate the deliverable",
+      "requirements": ["R2"],
+      "depends_on": ["T1"],
+      "admission": {"resources": ["path:src/main.rs"]},
+      "context": {"requirements": ["Integrate the public behavior."], "dependency_artifacts": ["src/lib.rs from T1"], "limits": ["Preserve existing work."]},
+      "executor": {"kind": "fixture", "outcome": "completed", "summary": "Example integration deliverable."}
+    }
+  ],
+  "operations": [
+    {
+      "id": "toolchain",
+      "stage": {"kind": "prerequisite", "consumers": ["T1", "T2"]},
+      "required": true,
+      "revision": "authored-r1",
+      "inputs": ["Cargo.toml"],
+      "initial": {"program": "cargo", "args": ["--version"], "cwd": ".", "deadline_ms": 30000}
+    },
+    {
+      "id": "focused",
+      "stage": {"kind": "task", "task": "T1"},
+      "required": true,
+      "revision": "authored-r1",
+      "inputs": ["Cargo.toml", "src/lib.rs"],
+      "initial": {"program": "cargo", "args": ["check", "--lib"], "cwd": ".", "deadline_ms": 120000},
+      "repair_task": "T1"
+    },
+    {
+      "id": "integration",
+      "stage": {"kind": "group", "tasks": ["T1", "T2"]},
+      "required": true,
+      "revision": "authored-r1",
+      "inputs": ["Cargo.toml", "src", "tests"],
+      "initial": {"program": "cargo", "args": ["test", "--tests"], "cwd": ".", "deadline_ms": 180000},
+      "repair_task": "T2"
+    },
+    {
+      "id": "package",
+      "stage": {"kind": "final", "tasks": ["T1", "T2"]},
+      "depends_on": [{"kind": "operation", "id": "integration"}],
+      "required": true,
+      "revision": "authored-r1",
+      "inputs": ["Cargo.toml", "src", "tests"],
+      "initial": {"program": "cargo", "args": ["package", "--no-verify"], "cwd": ".", "deadline_ms": 180000},
+      "repair_task": "T2"
+    }
+  ]
+}
