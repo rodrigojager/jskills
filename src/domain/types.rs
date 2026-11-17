@@ -53,6 +53,11 @@ pub enum Executor {
         #[serde(flatten)]
         config: crate::executors::claude::ClaudeConfig,
     },
+    #[serde(rename = "opencode")]
+    OpenCode {
+        #[serde(flatten)]
+        config: crate::executors::opencode::OpenCodeConfig,
+    },
     Fixture {
         outcome: FixtureOutcome,
         #[serde(default)]

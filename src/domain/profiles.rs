@@ -164,6 +164,12 @@ pub fn effective(
         values.insert("autonomy".into(), json!("autonomous"));
         origins.insert("autonomy".into(), "supported_default".into());
     }
+    if values.get("executor").and_then(Value::as_str) == Some("opencode")
+        && !values.contains_key("native_agent")
+    {
+        values.insert("native_agent".into(), json!("build"));
+        origins.insert("native_agent".into(), "supported_default".into());
+    }
     let missing: Vec<_> = ["executor", "provider", "model"]
         .into_iter()
         .filter(|key| !values.contains_key(*key))
@@ -226,6 +232,10 @@ pub fn resolve(
                 values["autonomy"] = json!(autonomy);
                 origins.insert("autonomy".into(), "task_or_supported_default".into());
             }
+            if let Executor::OpenCode { config } = executor {
+                values["autonomy"] = serde_json::to_value(&config.permissions)?;
+                origins.insert("autonomy".into(), "task_or_supported_default".into());
+            }
             return Ok((
                 task.clone(),
                 EffectiveProfile {
@@ -242,11 +252,21 @@ pub fn resolve(
     let snapshot = effective(workspace, alias, overrides, defaults)?;
     let config: ProfileConfig = serde_json::from_value(snapshot.values.clone())?;
     ensure!(
-        matches!(config.executor.as_deref(), Some("codex" | "claude")),
+        matches!(
+            config.executor.as_deref(),
+            Some("codex" | "claude" | "opencode")
+        ),
         "executor {} is configured; its native adapter is not available in this build",
         config.executor.as_deref().unwrap()
     );
-    let mut value = if config.executor.as_deref() == Some("claude") {
+    let mut value = if config.executor.as_deref() == Some("opencode") {
+        ensure!(
+            config.effort.is_none() && config.native_profile.is_none(),
+            "OpenCode adapter does not support effort/native_profile; use variant/native_agent"
+        );
+        json!({"kind":"opencode","provider":config.provider,"model":config.model,"variant":config.variant,
+            "native_agent":config.native_agent,"permissions":config.autonomy.unwrap()})
+    } else if config.executor.as_deref() == Some("claude") {
         ensure!(
             config.variant.is_none() && config.native_profile.is_none(),
             "Claude adapter does not support variant/native_profile; use native_agent for a native Claude agent"

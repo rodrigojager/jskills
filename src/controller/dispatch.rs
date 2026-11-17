@@ -18,6 +18,7 @@ struct Active {
     child: crate::execution::custody::OwnedProcess,
     codex: bool,
     claude: bool,
+    opencode: bool,
 }
 
 /// The only runtime writer: transactions are finished before process/socket waits.
@@ -127,6 +128,13 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
             }
             if let Some(exit) = observation? {
                 if stopped {
+                    if current.opencode {
+                        crate::executors::opencode::capture_interrupted(
+                            workspace,
+                            &current.task,
+                            &current.id,
+                        )?;
+                    }
                     if current.codex {
                         crate::executors::codex::capture_interrupted(
                             workspace,
@@ -143,6 +151,16 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
                     }
                     store.retire(run, &current.task, &current.id, exit, true)?;
                 } else {
+                    if current.opencode {
+                        crate::executors::opencode::finish(
+                            workspace,
+                            &mut store,
+                            run,
+                            &current.task,
+                            &current.id,
+                            exit == Some(0),
+                        )?;
+                    }
                     if current.codex {
                         crate::executors::codex::finish(
                             workspace,
@@ -214,6 +232,10 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
                         claude: matches!(
                             task.executor,
                             crate::domain::types::Executor::Claude { .. }
+                        ),
+                        opencode: matches!(
+                            task.executor,
+                            crate::domain::types::Executor::OpenCode { .. }
                         ),
                     });
                     if let Err(error) = store.launched(&attempt, pid) {
