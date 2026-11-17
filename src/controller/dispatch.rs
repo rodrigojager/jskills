@@ -1,7 +1,6 @@
 use crate::{
     execution::launch,
     read::status,
-    resources::ControllerGuard,
     storage::{Store, Workspace},
     transport::{self, ControlEndpoint, Request, Response},
 };
@@ -9,7 +8,6 @@ use anyhow::{Context, Result, ensure};
 use std::{
     fs,
     net::{TcpListener, TcpStream},
-    process::Child,
     time::Duration,
 };
 
@@ -17,32 +15,29 @@ struct Active {
     id: String,
     task: String,
     token: String,
-    child: Child,
+    child: crate::execution::custody::OwnedProcess,
     codex: bool,
-}
-
-impl Drop for Active {
-    fn drop(&mut self) {
-        if !matches!(self.child.try_wait(), Ok(Some(_))) {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-        }
-    }
 }
 
 /// The only runtime writer: transactions are finished before process/socket waits.
 pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
-    let guard = ControllerGuard::acquire(&workspace.git_dir)?;
+    let mut owner = super::lifetime::Owner::acquire(workspace, run)?;
     ensure!(
         workspace.database().is_file(),
         "no runtime database; import a plan first"
     );
-    let mut store = Store::open(workspace, &guard)?;
-    let mut commands = crate::controller::commands::Service::new(workspace, &store)?;
+    let mut store = Store::open(workspace, owner.guard())?;
     store.check_checkout(run, &workspace.checkout)?;
+    let mut commands = crate::controller::commands::Service::new(workspace, &store)?;
+    super::reconcile::attempts(workspace, &mut store, run)?;
+    let unknown: bool = store.conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM managed_commands WHERE run_id=?1 AND state='unknown')",
+        [run],
+        |r| r.get(0),
+    )?;
     ensure!(
-        !store.has_unretired(run)?,
-        "unfinished launch/process requires reconciliation; no replacement was launched"
+        !unknown,
+        "managed command custody is unknown; affected run admission is paused"
     );
     let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
     listener.set_nonblocking(true)?;
@@ -52,14 +47,23 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
         run: run.into(),
     };
     write_endpoint(workspace, &endpoint)?;
+    owner.endpoint(endpoint.endpoint)?;
     store.set_run_state(run, "running")?;
     let mut active: Option<Active> = None;
     let mut stopped = false;
     loop {
+        stopped |= super::lifetime::interrupted();
+        if stopped {
+            commands.stop_all(&store, "controller stopped")?;
+        }
         commands.poll(&store)?;
         // Drain requests before observing exit, so a designated result queued
         // just before process exit cannot be mistaken for missing evidence.
-        while let Some(mut stream) = accept(&listener)? {
+        for _ in 0..32 {
+            let Some(mut stream) = accept(&listener)? else {
+                break;
+            };
+            stopped |= super::lifetime::interrupted();
             // Winsock inherits the listener's nonblocking mode on acceptance.
             // Bound each individual request with timeouts instead.
             stream.set_nonblocking(false)?;
@@ -67,6 +71,7 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
             stream.set_write_timeout(Some(Duration::from_millis(100)))?;
             let result: Result<bool> = (|| match transport::read_message(&mut stream)? {
                 Request::Result { token, receipt } => {
+                    ensure!(!stopped, "controller stopped accepting results");
                     let active = active.as_ref().context("no active task attempt")?;
                     ensure!(token == active.token, "invalid result scope");
                     Ok(!store.accept(run, &active.id, &receipt)?)
@@ -98,38 +103,46 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
             // A disconnected client does not undo an already durable receipt.
             let _ = transport::write_message(&mut stream, &response);
         }
+        stopped |= super::lifetime::interrupted();
         if stopped {
             commands.stop_all(&store, "controller stopped")?;
         }
         if let Some(current) = active.as_mut() {
             if stopped {
-                // T01 launches a direct fixture with no descendants. Broader
-                // process-tree ownership/reconciliation is the custody increment.
-                if current.child.try_wait()?.is_none() {
-                    current.child.kill()?;
+                current.child.request_stop()?;
+            }
+            let observation = current.child.poll();
+            if let Err(error) = observation {
+                store.conn.execute(
+                    "UPDATE attempts SET state='uncertain' WHERE id=?1",
+                    [&current.id],
+                )?;
+                store.set_run_state(run, "custody_unknown")?;
+                return Err(error);
+            }
+            if let Some(exit) = observation? {
+                if stopped {
+                    if current.codex {
+                        crate::executors::codex::capture_interrupted(
+                            workspace,
+                            &current.task,
+                            &current.id,
+                        )?;
+                    }
+                    store.retire(run, &current.task, &current.id, exit, true)?;
+                } else {
+                    if current.codex {
+                        crate::executors::codex::finish(
+                            workspace,
+                            &mut store,
+                            run,
+                            &current.task,
+                            &current.id,
+                            exit == Some(0),
+                        )?;
+                    }
+                    store.retire(run, &current.task, &current.id, exit, false)?;
                 }
-                let exit = current.child.wait()?;
-                if current.codex {
-                    crate::executors::codex::capture_interrupted(
-                        workspace,
-                        &current.task,
-                        &current.id,
-                    )?;
-                }
-                store.retire(run, &current.task, &current.id, exit.code(), true)?;
-                active = None;
-            } else if let Some(exit) = current.child.try_wait()? {
-                if current.codex {
-                    crate::executors::codex::finish(
-                        workspace,
-                        &mut store,
-                        run,
-                        &current.task,
-                        &current.id,
-                        exit.success(),
-                    )?;
-                }
-                store.retire(run, &current.task, &current.id, exit.code(), false)?;
                 active = None;
             }
         }
@@ -172,14 +185,22 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
                         ),
                     });
                     if let Err(error) = store.launched(&attempt, pid) {
-                        let current = active.as_mut().unwrap();
-                        let _ = current.child.kill();
-                        let _ = current.child.wait();
-                        return Err(error.context("spawned process retired after launch persistence failed; intent retained for reconciliation"));
+                        return Err(error.context("launch persistence failed; owned cleanup requested and intent retained for reconciliation"));
                     }
                 }
                 Err(error) => {
-                    store.retire(run, &task.id, &attempt, None, false)?;
+                    if crate::execution::custody::reconcile(
+                        &workspace.data.join("attempts").join(&attempt),
+                    )
+                    .unwrap_or(false)
+                    {
+                        store.retire(run, &task.id, &attempt, None, false)?;
+                    } else {
+                        store.conn.execute(
+                            "UPDATE attempts SET state='uncertain' WHERE id=?1",
+                            [&attempt],
+                        )?;
+                    }
                     store.set_run_state(run, "incomplete")?;
                     return Err(error.context("executor could not launch; task needs intervention"));
                 }

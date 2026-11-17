@@ -1,7 +1,6 @@
 //! Durable command receipts owned by the foreground controller, never by clients.
 use crate::{
     execution::commands::{CommandSpec, spawn},
-    resources::ControllerGuard,
     storage::{Store, Workspace},
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -14,7 +13,6 @@ use std::{
     io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
-    process::Child,
     time::{Duration, Instant},
 };
 
@@ -75,7 +73,7 @@ pub struct Reply {
 }
 
 struct Owned {
-    child: Child,
+    child: crate::execution::custody::OwnedProcess,
     deadline: Option<Instant>,
     stopping: bool,
 }
@@ -93,7 +91,7 @@ impl Service {
         store.conn.execute_batch(super::operation_repair::SCHEMA)?;
         // A prior controller's PID alone cannot prove custody. Keep uncertainty visible;
         // identical replay returns this receipt, and never launches a replacement.
-        store.conn.execute("UPDATE managed_commands SET state='unknown', reason='prior controller custody requires reconciliation' WHERE state IN ('intent','running','stopping')", [])?;
+        super::reconcile::commands(workspace, store)?;
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         listener.set_nonblocking(true)?;
         let endpoint = Endpoint {
@@ -125,20 +123,19 @@ impl Service {
         let mut retired = Vec::new();
         for (id, owned) in &mut self.live {
             if owned.deadline.is_some_and(|d| Instant::now() >= d) && !owned.stopping {
-                if owned.child.try_wait()?.is_none() {
-                    owned.child.kill()?;
-                }
+                owned.child.request_stop()?;
                 owned.stopping = true;
                 store.conn.execute("UPDATE managed_commands SET state='stopping',reason='command_deadline' WHERE id=?1", [id])?;
             }
-            if let Some(exit) = owned.child.try_wait()? {
+            let observation = owned.child.poll();
+            if let Err(error) = observation {
+                store.conn.execute("UPDATE managed_commands SET state='unknown',reason='owned cleanup unconfirmed' WHERE id=?1", [id])?;
+                return Err(error);
+            }
+            if let Some(exit) = observation? {
                 store.conn.execute(
                     "UPDATE managed_commands SET state=?2,exit_code=?3 WHERE id=?1",
-                    params![
-                        id,
-                        if owned.stopping { "stopped" } else { "exited" },
-                        exit.code()
-                    ],
+                    params![id, if owned.stopping { "stopped" } else { "exited" }, exit],
                 )?;
                 retired.push(id.clone());
             }
@@ -236,7 +233,10 @@ impl Service {
         }
     }
     pub(crate) fn start(&mut self, store: &Store, spec: CommandSpec) -> Result<Value> {
-        ensure!(!self.shutdown, "command controller is shutting down");
+        ensure!(
+            !self.shutdown && !super::lifetime::interrupted(),
+            "command controller is shutting down"
+        );
         let serialized = serde_json::to_string(&spec)?;
         let previous: Option<(String, String)> = store
             .conn
@@ -253,6 +253,17 @@ impl Service {
             return Ok(receipt);
         }
         spec.validate()?;
+        // An unresolved writer blocks this run's fresh launches, while exact
+        // request replays above still return their original durable receipt.
+        let unknown: bool = store.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM managed_commands WHERE run_id=?1 AND state='unknown')",
+            [&spec.run],
+            |r| r.get(0),
+        )?;
+        ensure!(
+            !unknown,
+            "prior command custody is unknown; fresh launches for this run are paused"
+        );
         let deadline = spec
             .deadline_ms
             .map(|ms| {
@@ -293,7 +304,10 @@ impl Service {
             }
             Err(_) => {
                 // Do not persist OS error text, which can contain private environment values.
-                store.conn.execute("UPDATE managed_commands SET state='launch_failed',reason='program launch failed' WHERE id=?1",[&id])?;
+                let empty =
+                    crate::execution::custody::reconcile(&self.data.join("commands").join(&id))
+                        .unwrap_or(false);
+                store.conn.execute("UPDATE managed_commands SET state=?2,reason='program launch failed or custody unconfirmed' WHERE id=?1",rusqlite::params![id,if empty {"launch_failed"} else {"unknown"}])?;
             }
         }
         let mut receipt = status(store, &self.data, &id)?;
@@ -307,9 +321,7 @@ impl Service {
                 "UPDATE managed_commands SET state='stopping',reason=?2 WHERE id=?1",
                 [id, reason],
             )?;
-            if owned.child.try_wait()?.is_none() {
-                owned.child.kill()?;
-            }
+            owned.child.request_stop()?;
             owned.stopping = true;
         } else {
             let receipt = status(store, &self.data, id)?;
@@ -321,6 +333,7 @@ impl Service {
         Ok(())
     }
     pub fn stop_all(&mut self, store: &Store, reason: &str) -> Result<()> {
+        self.shutdown = true;
         let ids: Vec<_> = self.live.keys().cloned().collect();
         for id in ids {
             self.stop(store, &id, reason)?;
@@ -330,14 +343,18 @@ impl Service {
 }
 
 pub fn serve(workspace: &Workspace) -> Result<i32> {
-    let guard = ControllerGuard::acquire(&workspace.git_dir)?;
+    let mut owner = super::lifetime::Owner::acquire(workspace, "managed-commands")?;
     ensure!(
         workspace.database().is_file(),
         "import a plan before serving commands"
     );
-    let store = Store::open(workspace, &guard)?;
+    let store = Store::open(workspace, owner.guard())?;
     let mut service = Service::new(workspace, &store)?;
+    owner.endpoint(service.endpoint.endpoint)?;
     while !service.shutdown || service.has_live() {
+        if super::lifetime::interrupted() {
+            service.stop_all(&store, "controller interrupted")?;
+        }
         service.poll(&store)?;
         std::thread::sleep(Duration::from_millis(10));
     }

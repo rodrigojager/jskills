@@ -6,7 +6,7 @@ use anyhow::Result;
 use std::{
     fs::{self, File},
     net::SocketAddr,
-    process::{Child, Command, Stdio},
+    process::{Command, Stdio},
 };
 
 pub fn task(
@@ -15,7 +15,7 @@ pub fn task(
     attempt: &str,
     endpoint: SocketAddr,
     token: &str,
-) -> Result<Child> {
+) -> Result<super::custody::OwnedProcess> {
     let ticket = crate::domain::tickets::write_attempt_ticket(workspace, task, attempt)?;
     if let Executor::Codex { config } = &task.executor {
         return crate::executors::codex::launch(
@@ -41,7 +41,8 @@ pub fn task(
         .unwrap()
         .replace('_', "-");
     // Each argument is a separate OS argument. No shell expansion or quoting.
-    Ok(Command::new(std::env::current_exe()?)
+    let mut command = Command::new(std::env::current_exe()?);
+    command
         .arg("fixture")
         .arg("--outcome")
         .arg(outcome)
@@ -60,6 +61,6 @@ pub fn task(
         .current_dir(&workspace.checkout)
         .stdin(Stdio::null())
         .stdout(stdout)
-        .stderr(stderr)
-        .spawn()?)
+        .stderr(stderr);
+    super::custody::OwnedProcess::spawn(&mut command, &output_dir)
 }

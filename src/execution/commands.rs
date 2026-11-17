@@ -5,7 +5,7 @@ use std::{
     collections::BTreeMap,
     fs::{self, File},
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Command, Stdio},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -62,7 +62,7 @@ impl CommandSpec {
     }
 }
 
-pub fn spawn(spec: &CommandSpec, output_dir: &Path) -> Result<Child> {
+pub fn spawn(spec: &CommandSpec, output_dir: &Path) -> Result<super::custody::OwnedProcess> {
     spec.validate()?;
     fs::create_dir_all(output_dir)?;
     let mut command = Command::new(&spec.program);
@@ -83,7 +83,6 @@ pub fn spawn(spec: &CommandSpec, output_dir: &Path) -> Result<Child> {
         .stdout(File::create(output_dir.join("stdout.log"))?)
         .stderr(File::create(output_dir.join("stderr.log"))?);
     // Direct file handles drain both streams without blocking the controller on pipes.
-    Ok(command
-        .spawn()
-        .context("command program could not launch")?)
+    super::custody::OwnedProcess::spawn(&mut command, output_dir)
+        .context("command program could not launch")
 }

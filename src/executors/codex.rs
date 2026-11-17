@@ -12,7 +12,7 @@ use std::{
     io::{BufRead, BufReader},
     net::SocketAddr,
     path::{Path, PathBuf},
-    process::{Child, Command},
+    process::Command,
 };
 
 fn executable() -> String {
@@ -111,7 +111,7 @@ pub fn launch(
     endpoint: SocketAddr,
     token: &str,
     ticket: &Path,
-) -> Result<Child> {
+) -> Result<crate::execution::custody::OwnedProcess> {
     let dir = workspace.data.join("attempts").join(attempt);
     fs::create_dir_all(&dir)?;
     let receipt = format!("native-{attempt}");
@@ -221,11 +221,10 @@ pub fn launch(
             "exact_session_resume":true,"observable_commands":"native output only; not managed command custody",
             "permissions":match config.permissions { PermissionMode::Autonomous=>"bypass approvals and sandbox", PermissionMode::Restricted=>"workspace-write, never approve" },
             "effective_configuration":"invocation overrides recorded; native resolved model/account access unknown",
-            "limitations":["native helpers are harness-managed", "hook trust may require prior native setup", "batch shims require explicit native or PowerShell executable", "process tree custody is a separate increment"]}
+            "limitations":["native helpers are harness-managed", "hook trust may require prior native setup", "batch shims require explicit native or PowerShell executable", "Linux deliberately detached sessions escape process-group custody"]}
         }))?,
     )?;
-    command
-        .spawn()
+    crate::execution::custody::OwnedProcess::spawn(&mut command, &dir)
         .context("could not launch the configured Codex executable")
 }
 
