@@ -81,6 +81,7 @@ pub struct Service {
     listener: TcpListener,
     endpoint: Endpoint,
     data: PathBuf,
+    workspace: Workspace,
     live: HashMap<String, Owned>,
     shutdown: bool,
 }
@@ -108,16 +109,33 @@ impl Service {
         let mut file = options.open(workspace.data.join("commands-control.json"))?;
         file.write_all(&serde_json::to_vec(&endpoint)?)?;
         file.sync_all()?;
-        Ok(Self {
+        let service = Self {
             listener,
             endpoint,
             data: workspace.data.clone(),
+            workspace: workspace.clone(),
             live: HashMap::new(),
             shutdown: false,
-        })
+        };
+        let retired = {
+            let mut q = store.conn.prepare("SELECT id FROM managed_commands WHERE state IN ('stopped','exited','launch_failed')")?;
+            q.query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for id in retired {
+            service.release_resources(store, &id)?;
+        }
+        Ok(service)
     }
     pub fn has_live(&self) -> bool {
         !self.live.is_empty()
+    }
+    pub fn has_pending(&self, store: &Store, run: &str) -> Result<bool> {
+        Ok(store.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM managed_commands WHERE run_id=?1 AND state='queued')",
+            [run],
+            |r| r.get(0),
+        )?)
     }
     pub fn poll(&mut self, store: &Store) -> Result<()> {
         let mut retired = Vec::new();
@@ -142,6 +160,7 @@ impl Service {
         }
         for id in retired {
             self.live.remove(&id);
+            self.release_resources(store, &id)?;
         }
         // Bound admission per tick so busy clients cannot starve observation.
         for _ in 0..32 {
@@ -174,6 +193,7 @@ impl Service {
             // Client loss never rolls back accepted launch intent or its receipt.
             let _ = crate::transport::write_message(&mut stream, &reply);
         }
+        self.admit_queued(store)?;
         Ok(())
     }
     fn handle(&mut self, store: &Store, action: Action) -> Result<Value> {
@@ -232,11 +252,22 @@ impl Service {
             }
         }
     }
-    pub(crate) fn start(&mut self, store: &Store, spec: CommandSpec) -> Result<Value> {
+    pub(crate) fn start(&mut self, store: &Store, mut spec: CommandSpec) -> Result<Value> {
         ensure!(
             !self.shutdown && !super::lifetime::interrupted(),
             "command controller is shutting down"
         );
+        if let Some(task) = &spec.task {
+            let task_json: String = store.conn.query_row(
+                "SELECT spec FROM tasks WHERE run_id=?1 AND id=?2",
+                [&spec.run, task],
+                |r| r.get(0),
+            )?;
+            let task: crate::domain::types::Task = serde_json::from_str(&task_json)?;
+            spec.resources.extend(task.admission.resources);
+            spec.resources.sort();
+            spec.resources.dedup();
+        }
         let serialized = serde_json::to_string(&spec)?;
         let previous: Option<(String, String)> = store
             .conn
@@ -264,7 +295,7 @@ impl Service {
             !unknown,
             "prior command custody is unknown; fresh launches for this run are paused"
         );
-        let deadline = spec
+        let _deadline = spec
             .deadline_ms
             .map(|ms| {
                 Instant::now()
@@ -283,36 +314,119 @@ impl Service {
             ensure!(active, "command requires the current running task attempt");
         }
         let id = uuid::Uuid::new_v4().to_string();
-        store.conn.execute("INSERT INTO managed_commands(id,request_id,run_id,task_id,attempt_id,spec,state) VALUES(?1,?2,?3,?4,?5,?6,'intent')",params![id,spec.request_id,spec.run,spec.task,spec.attempt,serialized])?;
-        match spawn(&spec, &self.data.join("commands").join(&id)) {
-            Ok(child) => {
-                let pid = child.id();
-                self.live.insert(
-                    id.clone(),
-                    Owned {
-                        child,
-                        deadline,
-                        stopping: false,
-                    },
-                );
-                // Retain the Child even if receipt persistence fails. A replay sees
-                // intent and cannot repeat this launch across the SQL/spawn gap.
-                store.conn.execute(
-                    "UPDATE managed_commands SET state='running',pid=?2 WHERE id=?1",
-                    params![id, pid],
-                )?;
-            }
-            Err(_) => {
-                // Do not persist OS error text, which can contain private environment values.
-                let empty =
-                    crate::execution::custody::reconcile(&self.data.join("commands").join(&id))
-                        .unwrap_or(false);
-                store.conn.execute("UPDATE managed_commands SET state=?2,reason='program launch failed or custody unconfirmed' WHERE id=?1",rusqlite::params![id,if empty {"launch_failed"} else {"unknown"}])?;
-            }
-        }
+        super::admission::resources(&self.workspace, &spec.resources)?;
+        store.conn.execute("INSERT INTO managed_commands(id,request_id,run_id,task_id,attempt_id,spec,state) VALUES(?1,?2,?3,?4,?5,?6,'queued')",params![id,spec.request_id,spec.run,spec.task,spec.attempt,serialized])?;
+        self.admit_queued(store)?;
         let mut receipt = status(store, &self.data, &id)?;
         receipt["duplicate"] = json!(false);
         Ok(receipt)
+    }
+    fn resource_owner(&self, spec: &CommandSpec, id: &str) -> crate::resources::registry::Owner {
+        super::admission::owner(
+            &self.workspace,
+            &spec.run,
+            spec.task.as_deref().unwrap_or("operation"),
+            spec.attempt.as_deref().unwrap_or(id),
+        )
+    }
+    fn release_resources(&self, store: &Store, id: &str) -> Result<()> {
+        let spec: String =
+            store
+                .conn
+                .query_row("SELECT spec FROM managed_commands WHERE id=?1", [id], |r| {
+                    r.get(0)
+                })?;
+        let spec: CommandSpec = serde_json::from_str(&spec)?;
+        super::admission::release_reserved(
+            &self.workspace,
+            self.resource_owner(&spec, id),
+            &format!("command-{id}"),
+        )
+    }
+    fn admit_queued(&mut self, store: &Store) -> Result<()> {
+        if self.shutdown || super::lifetime::interrupted() {
+            return Ok(());
+        }
+        let rows = {
+            let mut q = store.conn.prepare(
+                "SELECT id,spec FROM managed_commands WHERE state='queued' ORDER BY rowid,id",
+            )?;
+            q.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for (id, json) in rows {
+            let spec: CommandSpec = serde_json::from_str(&json)?;
+            let capacity = super::admission::plan(store, &spec.run)?
+                .scheduling
+                .heavy_capacity;
+            let used: i64 = store.conn.query_row("SELECT count(*) FROM managed_commands WHERE run_id=?1 AND state IN ('intent','running','stopping','unknown')", [&spec.run], |r|r.get(0))?;
+            if usize::try_from(used)? >= capacity {
+                continue;
+            }
+            if let (Some(task), Some(attempt)) = (&spec.task, &spec.attempt) {
+                let current: bool = store.conn.query_row("SELECT EXISTS(SELECT 1 FROM attempts WHERE id=?1 AND run_id=?2 AND task_id=?3 AND state='running')", [attempt,&spec.run,task], |r|r.get(0))?;
+                if !current {
+                    store.conn.execute("UPDATE managed_commands SET state='stopped',reason='task attempt retired before command admission' WHERE id=?1", [&id])?;
+                    continue;
+                }
+            }
+            if !super::admission::reserve(
+                &self.workspace,
+                self.resource_owner(&spec, &id),
+                &spec.resources,
+                &format!("command-{id}"),
+            )? {
+                continue;
+            }
+            // Recheck the entire invocation after its wait before persisting intent.
+            if spec.validate().is_err() {
+                store.conn.execute("UPDATE managed_commands SET state='launch_failed',reason='queued invocation is no longer usable' WHERE id=?1", [&id])?;
+                self.release_resources(store, &id)?;
+                continue;
+            }
+            let deadline = spec
+                .deadline_ms
+                .map(|ms| {
+                    Instant::now()
+                        .checked_add(Duration::from_millis(ms))
+                        .context("command deadline is out of range")
+                })
+                .transpose()?;
+            store.conn.execute(
+                "UPDATE managed_commands SET state='intent' WHERE id=?1 AND state='queued'",
+                [&id],
+            )?;
+            match spawn(&spec, &self.data.join("commands").join(&id)) {
+                Ok(child) => {
+                    let pid = child.id();
+                    self.live.insert(
+                        id.clone(),
+                        Owned {
+                            child,
+                            deadline,
+                            stopping: false,
+                        },
+                    );
+                    // Retain the Child even if receipt persistence fails. A replay sees
+                    // intent and cannot repeat this launch across the SQL/spawn gap.
+                    store.conn.execute(
+                        "UPDATE managed_commands SET state='running',pid=?2 WHERE id=?1",
+                        params![id, pid],
+                    )?;
+                }
+                Err(_) => {
+                    // Do not persist OS error text, which can contain private environment values.
+                    let empty =
+                        crate::execution::custody::reconcile(&self.data.join("commands").join(&id))
+                            .unwrap_or(false);
+                    store.conn.execute("UPDATE managed_commands SET state=?2,reason='program launch failed or custody unconfirmed' WHERE id=?1",rusqlite::params![id,if empty {"launch_failed"} else {"unknown"}])?;
+                    if empty {
+                        self.release_resources(store, &id)?;
+                    }
+                }
+            }
+        }
+        Ok(())
     }
     fn stop(&mut self, store: &Store, id: &str, reason: &str) -> Result<()> {
         ensure!(!reason.trim().is_empty(), "stop reason is required");
@@ -329,6 +443,12 @@ impl Service {
                 receipt["state"] != "unknown" && receipt["state"] != "intent",
                 "unresolved custody; cannot claim process stopped"
             );
+            if receipt["state"] == "queued" {
+                store.conn.execute(
+                    "UPDATE managed_commands SET state='stopped',reason=?2 WHERE id=?1",
+                    [id, reason],
+                )?;
+            }
         }
         Ok(())
     }
@@ -338,6 +458,10 @@ impl Service {
         for id in ids {
             self.stop(store, &id, reason)?;
         }
+        store.conn.execute(
+            "UPDATE managed_commands SET state='stopped',reason=?1 WHERE state='queued'",
+            [reason],
+        )?;
         Ok(())
     }
 }

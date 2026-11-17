@@ -30,6 +30,7 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
     store.check_checkout(run, &workspace.checkout)?;
     let mut commands = crate::controller::commands::Service::new(workspace, &store)?;
     super::reconcile::attempts(workspace, &mut store, run)?;
+    super::admission::reconcile(workspace, &store, run)?;
     let unknown: bool = store.conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM managed_commands WHERE run_id=?1 AND state='unknown')",
         [run],
@@ -49,7 +50,7 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
     write_endpoint(workspace, &endpoint)?;
     owner.endpoint(endpoint.endpoint)?;
     store.set_run_state(run, "running")?;
-    let mut active: Option<Active> = None;
+    let mut active: Vec<Active> = Vec::new();
     let mut stopped = false;
     loop {
         stopped |= super::lifetime::interrupted();
@@ -72,8 +73,10 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
             let result: Result<bool> = (|| match transport::read_message(&mut stream)? {
                 Request::Result { token, receipt } => {
                     ensure!(!stopped, "controller stopped accepting results");
-                    let active = active.as_ref().context("no active task attempt")?;
-                    ensure!(token == active.token, "invalid result scope");
+                    let active = active
+                        .iter()
+                        .find(|a| a.id == receipt.attempt_id && a.token == token)
+                        .context("invalid result scope or inactive task attempt")?;
                     Ok(!store.accept(run, &active.id, &receipt)?)
                 }
                 Request::Stop {
@@ -107,7 +110,8 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
         if stopped {
             commands.stop_all(&store, "controller stopped")?;
         }
-        if let Some(current) = active.as_mut() {
+        let mut retired = Vec::new();
+        for current in &mut active {
             if stopped {
                 current.child.request_stop()?;
             }
@@ -143,38 +147,44 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
                     }
                     store.retire(run, &current.task, &current.id, exit, false)?;
                 }
-                active = None;
+                super::admission::release(workspace, run, &current.task, &current.id)?;
+                retired.push(current.id.clone());
             }
         }
+        active.retain(|a| !retired.contains(&a.id));
         let operation_progress = if !stopped {
             crate::controller::operations::tick(workspace, &store, run, &mut commands)?
         } else {
             false
         };
-        if active.is_none() {
-            if stopped {
-                if commands.has_live() {
-                    std::thread::sleep(Duration::from_millis(10));
-                    continue;
-                }
-                break;
+        if stopped {
+            if commands.has_live() || !active.is_empty() {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
             }
-            let Some(task) = store.ready(run)? else {
-                if commands.has_live() || operation_progress {
-                    std::thread::sleep(Duration::from_millis(10));
-                    continue;
-                }
+            break;
+        }
+        let mut admitted = false;
+        loop {
+            let attempt = uuid::Uuid::new_v4().to_string();
+            let Some(task) = super::admission::next(workspace, &store, run, &attempt)? else {
                 break;
             };
-            let attempt = uuid::Uuid::new_v4().to_string();
             let token = uuid::Uuid::new_v4().to_string();
-            store.intent(run, &task.id, &attempt)?;
+            let task = match store.prepare_attempt(workspace, run, &task, &attempt) {
+                Ok(task) => task,
+                Err(error) => {
+                    super::admission::release(workspace, run, &task.id, &attempt)?;
+                    return Err(error);
+                }
+            };
+            admitted = true;
             match launch::task(workspace, &task, &attempt, endpoint.endpoint, &token) {
                 Ok(child) => {
                     let pid = child.id();
                     // Retain the owned process even if post-spawn persistence
                     // fails; never create a second attempt on that uncertainty.
-                    active = Some(Active {
+                    active.push(Active {
                         id: attempt.clone(),
                         task: task.id.clone(),
                         token,
@@ -195,6 +205,7 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
                     .unwrap_or(false)
                     {
                         store.retire(run, &task.id, &attempt, None, false)?;
+                        super::admission::release(workspace, run, &task.id, &attempt)?;
                     } else {
                         store.conn.execute(
                             "UPDATE attempts SET state='uncertain' WHERE id=?1",
@@ -205,6 +216,14 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
                     return Err(error.context("executor could not launch; task needs intervention"));
                 }
             }
+        }
+        if active.is_empty()
+            && !commands.has_live()
+            && !operation_progress
+            && !admitted
+            && !super::admission::cooling_down(&store, run)?
+        {
+            break;
         }
         std::thread::sleep(Duration::from_millis(10));
     }

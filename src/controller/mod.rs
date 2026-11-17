@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod admission;
 pub mod dispatch;
 pub mod lifetime;
 pub mod reconcile;

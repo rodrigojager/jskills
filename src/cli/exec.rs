@@ -125,7 +125,7 @@ pub fn execute(workspace: &Workspace, exec: Exec) -> Result<i32> {
                 let mut receipt = read(&id, None)?;
                 let running = matches!(
                     receipt["state"].as_str(),
-                    Some("intent" | "running" | "stopping")
+                    Some("queued" | "intent" | "running" | "stopping")
                 );
                 if !running || started.elapsed() >= Duration::from_secs(wait_seconds) {
                     receipt["wait_expired"] = Value::Bool(running);
