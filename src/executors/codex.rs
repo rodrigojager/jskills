@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     fs::{self, File},
-    io::{BufRead, BufReader},
+    io::BufReader,
     net::SocketAddr,
     path::{Path, PathBuf},
     process::Command,
@@ -50,6 +50,8 @@ pub struct CodexConfig {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Observation {
+    #[serde(default)]
+    pub decoding: crate::read::output::DecodeProvenance,
     pub task_id: String,
     pub attempt_id: String,
     pub thread_id: Option<String>,
@@ -233,6 +235,7 @@ pub fn launch(
 /// preserved and counted as invalid, and cannot become a designated result.
 pub fn observe(dir: &Path, task: &str, attempt: &str) -> Result<(Observation, Option<String>)> {
     let mut observation = Observation {
+        decoding: Default::default(),
         task_id: task.into(),
         attempt_id: attempt.into(),
         thread_id: None,
@@ -246,16 +249,14 @@ pub fn observe(dir: &Path, task: &str, attempt: &str) -> Result<(Observation, Op
     };
     let mut final_text = None;
     let mut started = false;
-    let mut reader = BufReader::new(File::open(&observation.raw_stdout)?);
-    loop {
-        let mut bytes = Vec::new();
-        if reader.read_until(b'\n', &mut bytes)? == 0 {
-            break;
-        }
-        if !bytes.ends_with(b"\n") {
+    let mut reader =
+        crate::read::output::Records::new(BufReader::new(File::open(&observation.raw_stdout)?));
+    while let Some(record) = reader.next_record()? {
+        let Some(mut bytes) = record.bytes else {
             observation.invalid_records += 1;
-            break;
-        }
+            observation.protocol_error = Some("native decoding gap; raw capture retained".into());
+            continue;
+        };
         bytes.pop();
         if bytes.is_empty() {
             continue;
@@ -263,6 +264,7 @@ pub fn observe(dir: &Path, task: &str, attempt: &str) -> Result<(Observation, Op
         let value: Value = match serde_json::from_slice(&bytes) {
             Ok(v) => v,
             Err(_) => {
+                reader.gap(record.start, record.end, "invalid_json");
                 observation.invalid_records += 1;
                 continue;
             }
@@ -307,6 +309,7 @@ pub fn observe(dir: &Path, task: &str, attempt: &str) -> Result<(Observation, Op
             _ => observation.unknown_records += 1,
         }
     }
+    observation.decoding = reader.provenance();
     Ok((observation, final_text))
 }
 
@@ -379,7 +382,16 @@ pub fn finish(
             success && observation.completed_turn && observation.thread_id.is_some(),
             "native final lacks a successful exact-thread terminal turn"
         );
-        let text = fs::read_to_string(dir.join("final.json"))?;
+        let mut text = Vec::new();
+        use std::io::Read;
+        File::open(dir.join("final.json"))?
+            .take(crate::read::output::MAX_RECORD_BYTES as u64 + 1)
+            .read_to_end(&mut text)?;
+        ensure!(
+            text.len() <= crate::read::output::MAX_RECORD_BYTES,
+            "native final exceeds decoding limit; raw capture retained"
+        );
+        let text = String::from_utf8(text)?;
         ensure!(
             final_text.as_deref().map(str::trim) == Some(text.trim()),
             "native last-message differs from terminal root agent payload"

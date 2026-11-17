@@ -51,6 +51,10 @@ pub fn read(path: &Path, run: &str) -> Result<Status> {
     );
     // One coherent read transaction. It performs no reconciliation or writes.
     conn.execute_batch("BEGIN")?;
+    from_connection(&conn, run)
+}
+
+pub fn from_connection(conn: &Connection, run: &str) -> Result<Status> {
     let state = conn.query_row("SELECT state FROM runs WHERE id=?1", [run], |r| r.get(0))?;
     let mut statement =
         conn.prepare("SELECT id,state FROM tasks WHERE run_id=?1 ORDER BY ordinal")?;
@@ -88,7 +92,7 @@ pub fn read(path: &Path, run: &str) -> Result<Status> {
         tasks.push(TaskStatus {
             lineage_root: crate::controller::graph::root(&conn, run, &id)?,
             cooldown: crate::controller::cooldowns::read(
-                &conn,
+                conn,
                 run,
                 &id,
                 crate::controller::admission::now_ms(),

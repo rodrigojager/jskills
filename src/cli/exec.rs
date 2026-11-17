@@ -1,7 +1,7 @@
 use crate::{
     controller::commands::{self, Action, Endpoint},
     execution::commands::CommandSpec,
-    storage::{Store, Workspace},
+    storage::Workspace,
 };
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
@@ -66,46 +66,23 @@ pub fn execute(workspace: &Workspace, exec: Exec) -> Result<i32> {
         .map_err(Into::into)
     };
     let read = |id: &str, output_args: Option<(&str, u64, usize)>| -> Result<Value> {
-        let action = || match output_args {
-            Some((stream, offset, limit)) => Action::Output {
-                id: id.into(),
-                stream: stream.into(),
-                offset,
-                limit,
+        use crate::read::projections::{self, Request, View};
+        let mut request = Request::new(
+            if output_args.is_some() {
+                View::Logs
+            } else {
+                View::Command
             },
-            None => Action::Status { id: id.into() },
-        };
-        if let Ok(endpoint) = endpoint() {
-            match commands::send(&endpoint, action()) {
-                Ok(value) => return Ok(value),
-                Err(error) if error.downcast_ref::<std::io::Error>().is_none() => {
-                    return Err(error);
-                }
-                Err(_) => {}
-            }
+            None,
+        );
+        request.command = Some(id.into());
+        if let Some((stream, offset, limit)) = output_args {
+            request.stream = stream.into();
+            request.after = offset;
+            request.limit = limit;
         }
-        // Offline projections open strictly read-only; they neither reconcile nor repair.
-        let store = Store {
-            conn: rusqlite::Connection::open_with_flags(
-                workspace.database(),
-                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-            )?,
-        };
-        let mut value = match output_args {
-            Some((stream, offset, limit)) => {
-                commands::output(&store, &workspace.data, id, stream, offset, limit)?
-            }
-            None => commands::status(&store, &workspace.data, id)?,
-        };
-        value["controller_available"] = Value::Bool(false);
-        if matches!(
-            value["state"].as_str(),
-            Some("intent" | "running" | "stopping")
-        ) {
-            value["recorded_state"] = value["state"].clone();
-            value["state"] = Value::String("unknown".into());
-        }
-        Ok(value)
+        // Never contact a writer from status/output/wait, even while it is live.
+        projections::read(workspace, &request)
     };
     let value = match exec.action {
         ExecAction::Start { request } => {
@@ -123,8 +100,9 @@ pub fn execute(workspace: &Workspace, exec: Exec) -> Result<i32> {
             let started = Instant::now();
             loop {
                 let mut receipt = read(&id, None)?;
+                // Poll pending persisted receipts without asserting live custody.
                 let running = matches!(
-                    receipt["state"].as_str(),
+                    receipt["recorded_state"].as_str(),
                     Some("queued" | "intent" | "running" | "stopping")
                 );
                 if !running || started.elapsed() >= Duration::from_secs(wait_seconds) {

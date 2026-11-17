@@ -7,6 +7,7 @@ pub mod graph;
 pub mod operations;
 pub mod profiles;
 pub mod questions;
+pub mod read;
 pub mod resources;
 pub mod retry;
 use crate::{
@@ -16,7 +17,7 @@ use crate::{
         validation,
     },
     executors,
-    read::status,
+    read::projections::{Request as ReadRequest, View},
     resources::ControllerGuard,
     storage::{Store, Workspace},
     transport::{self, ControlEndpoint, Request},
@@ -47,6 +48,14 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Action {
+    /// Consume the versioned read contract used by CLI, terminal and HTTP.
+    Read(read::Read),
+    Runs(read::Page),
+    Tasks(read::Page),
+    Task(read::Entity),
+    Attempt(read::Entity),
+    Commands(read::Page),
+    Logs(read::Logs),
     /// Read or record explicit durable routine decisions.
     Decisions(decisions::Decisions),
     /// Read structured pending/answered questions without mutations.
@@ -78,7 +87,9 @@ pub enum Action {
     /// Start, inspect, page, await and stop managed commands.
     Exec(exec::Exec),
     /// Validate explicit version-1 JSON intent without creating runtime state.
-    Validate { plan: PathBuf },
+    Validate {
+        plan: PathBuf,
+    },
     /// Import an immutable plan into SQLite, under the checkout writer lock.
     Import {
         plan: PathBuf,
@@ -192,6 +203,13 @@ pub fn execute() -> Result<i32> {
         action => {
             let workspace = Workspace::resolve(&cli.root, cli.data_dir.as_deref())?;
             match action {
+                Action::Read(args) => read::execute(&workspace, args),
+                Action::Runs(args) => read::print(&workspace, &args.request(View::Runs)),
+                Action::Tasks(args) => read::print(&workspace, &args.request(View::Tasks)),
+                Action::Task(args) => read::entity(&workspace, args, View::Task),
+                Action::Attempt(args) => read::entity(&workspace, args, View::Attempt),
+                Action::Commands(args) => read::print(&workspace, &args.request(View::Commands)),
+                Action::Logs(args) => read::logs(&workspace, args),
                 Action::Decisions(args) => decisions::execute(&workspace, args),
                 Action::Questions(args) => questions::read(&workspace, &args.run, true),
                 Action::Answer(args) => questions::answer(&workspace, args),
@@ -223,9 +241,7 @@ pub fn execute() -> Result<i32> {
                     controller::dispatch::run_with_autonomy(&workspace, &run, restricted)
                 }
                 Action::Status { run } => {
-                    let snapshot = status::read(&workspace.database(), &run)?;
-                    println!("{}", serde_json::to_string(&snapshot)?);
-                    Ok(if snapshot.complete { 0 } else { 3 })
+                    read::print(&workspace, &ReadRequest::new(View::Status, Some(&run)))
                 }
                 Action::Stop { run } => {
                     let endpoint: ControlEndpoint = serde_json::from_slice(

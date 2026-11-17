@@ -1,14 +1,10 @@
 use crate::{
-    controller::{
-        activity::{self, Kind, Severity},
-        clock,
-    },
+    controller::activity::{Kind, Severity},
     storage::Workspace,
     transport::{self, Request},
 };
-use anyhow::{Result, ensure};
+use anyhow::Result;
 use clap::Args;
-use rusqlite::{Connection, OpenFlags};
 use std::net::SocketAddr;
 
 #[derive(Args)]
@@ -51,38 +47,10 @@ pub fn log(args: Log) -> Result<i32> {
     Ok(0)
 }
 pub fn read(workspace: &Workspace, args: Activity) -> Result<i32> {
-    ensure!(workspace.database().is_file(), "no runtime database");
-    let conn = Connection::open_with_flags(
-        workspace.database(),
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )?;
-    conn.execute_batch("BEGIN")?;
-    let mut q =
-        conn.prepare("SELECT id FROM attempts WHERE run_id=?1 AND task_id=?2 ORDER BY rowid")?;
-    let mut attempts = Vec::new();
-    for attempt in q.query_map([&args.run, &args.task], |r| r.get::<_, String>(0))? {
-        attempts.push(activity::projection(&conn, &attempt?)?);
-    }
-    // A task may be imported but never supervised: null is explicit.
-    let has_table: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='task_clocks')",
-        [],
-        |r| r.get(0),
-    )?;
-    let has_clock = has_table
-        && conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM task_clocks WHERE run_id=?1 AND task_id=?2)",
-            [&args.run, &args.task],
-            |r| r.get::<_, bool>(0),
-        )?;
-    let task_clock = if has_clock {
-        clock::projection(&conn, &args.run, &args.task)?
-    } else {
-        serde_json::Value::Null
-    };
-    println!(
-        "{}",
-        serde_json::json!({"run":args.run,"task":args.task,"clock":task_clock,"attempts":attempts,"read_only":true})
+    let mut request = crate::read::projections::Request::new(
+        crate::read::projections::View::Activity,
+        Some(&args.run),
     );
-    Ok(0)
+    request.task = Some(args.task);
+    super::read::print(workspace, &request)
 }

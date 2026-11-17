@@ -6,7 +6,6 @@ use crate::{
 };
 use anyhow::{Result, ensure};
 use clap::Args;
-use rusqlite::{Connection, OpenFlags};
 use std::fs;
 
 #[derive(Args)]
@@ -61,28 +60,18 @@ pub fn ask(args: Ask) -> Result<i32> {
     Ok(0)
 }
 pub fn read(workspace: &Workspace, run: &str, questions: bool) -> Result<i32> {
-    ensure!(workspace.database().is_file(), "no runtime database");
-    let conn = Connection::open_with_flags(
-        workspace.database(),
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )?;
-    conn.execute_batch("BEGIN")?;
-    let exists: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM runs WHERE id=?1)",
-        [run],
-        |r| r.get(0),
-    )?;
-    ensure!(exists, "unknown run");
-    let records = if questions {
-        crate::controller::questions::questions(&conn, run)?
-    } else {
-        crate::controller::questions::read(&conn, run)?
-    };
-    println!(
-        "{}",
-        serde_json::json!({"run":run,"records":records,"read_only":true})
-    );
-    Ok(0)
+    use crate::read::projections::{Request, View};
+    super::read::print(
+        workspace,
+        &Request::new(
+            if questions {
+                View::Questions
+            } else {
+                View::Decisions
+            },
+            Some(run),
+        ),
+    )
 }
 pub fn answer(workspace: &Workspace, args: AnswerArgs) -> Result<i32> {
     let answer = Answer {

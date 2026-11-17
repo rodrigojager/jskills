@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     fs::{self, File},
-    io::{BufRead, BufReader},
+    io::BufReader,
     net::SocketAddr,
     path::{Path, PathBuf},
     process::Command,
@@ -43,6 +43,8 @@ pub struct ClaudeConfig {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Observation {
+    #[serde(default)]
+    pub decoding: crate::read::output::DecodeProvenance,
     pub task_id: String,
     pub attempt_id: String,
     pub session_id: Option<String>,
@@ -242,6 +244,7 @@ pub fn launch(
 /// records never affect root identity or designate a parent result.
 pub fn observe(dir: &Path, task: &str, attempt: &str) -> Result<(Observation, Option<Value>)> {
     let mut observation = Observation {
+        decoding: Default::default(),
         task_id: task.into(),
         attempt_id: attempt.into(),
         session_id: None,
@@ -261,22 +264,21 @@ pub fn observe(dir: &Path, task: &str, attempt: &str) -> Result<(Observation, Op
     let mut final_value = None;
     let mut initialized = false;
     let mut quota_rejected = false;
-    let mut reader = BufReader::new(File::open(&observation.raw_stdout)?);
-    loop {
-        let mut bytes = Vec::new();
-        if reader.read_until(b'\n', &mut bytes)? == 0 {
-            break;
-        }
-        if !bytes.ends_with(b"\n") {
+    let mut reader =
+        crate::read::output::Records::new(BufReader::new(File::open(&observation.raw_stdout)?));
+    while let Some(record) = reader.next_record()? {
+        let Some(bytes) = record.bytes else {
             observation.invalid_records += 1;
-            break;
-        }
+            observation.protocol_error = Some("native decoding gap; raw capture retained".into());
+            continue;
+        };
         if bytes.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
         let value: Value = match serde_json::from_slice(&bytes) {
             Ok(v) => v,
             Err(_) => {
+                reader.gap(record.start, record.end, "invalid_json");
                 observation.invalid_records += 1;
                 continue;
             }
@@ -354,6 +356,7 @@ pub fn observe(dir: &Path, task: &str, attempt: &str) -> Result<(Observation, Op
     {
         observation.failure_class = Some("quota_reset_unknown".into());
     }
+    observation.decoding = reader.provenance();
     Ok((observation, final_value))
 }
 

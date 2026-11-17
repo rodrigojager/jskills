@@ -1,5 +1,8 @@
 use crate::controller::commands::{self, Action as ControlAction, Endpoint};
-use crate::{read::status, storage::Workspace};
+use crate::{
+    read::projections::{self, Request, View},
+    storage::Workspace,
+};
 use anyhow::Result;
 use clap::{Args, Subcommand};
 use std::path::PathBuf;
@@ -66,12 +69,14 @@ pub fn execute(workspace: &Workspace, command: Operations) -> Result<i32> {
             Ok(0)
         }
         Action::Status { run } => {
-            let snapshot = status::read(&workspace.database(), &run)?;
-            println!(
-                "{}",
-                serde_json::json!({"run":run,"verification_complete":snapshot.verification_complete,"operations":snapshot.operations})
-            );
-            Ok(if snapshot.verification_complete { 0 } else { 3 })
+            let snapshot =
+                projections::read(workspace, &Request::new(View::Operations, Some(&run)))?;
+            println!("{}", snapshot);
+            Ok(if snapshot["verification_complete"] == true {
+                0
+            } else {
+                3
+            })
         }
         Action::RepairBegin {
             run,

@@ -107,7 +107,12 @@ fn client_exit_wait_expiry_replay_conflict_and_byte_cursors() {
     let id = replay["command_id"].as_str().unwrap();
     let expired = call(&f, &["exec", "wait", id, "--wait-seconds", "0"]);
     assert_eq!(expired["wait_expired"], true);
-    assert_eq!(expired["state"], "running");
+    // Pure reads cannot prove current live custody, even while the controller
+    // is serving. Keep its persisted pending state separate and continue the
+    // bounded client wait until a terminal receipt is committed.
+    assert_eq!(expired["state"], "unknown");
+    assert_eq!(expired["recorded_state"], "running");
+    assert_eq!(expired["availability"]["controller"], "unobserved");
     let terminal = call(&f, &["exec", "wait", id, "--wait-seconds", "5"]);
     assert_eq!(terminal["state"], "exited");
     assert_eq!(terminal["exit_code"], 0);

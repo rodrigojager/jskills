@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     fs::{self, File},
-    io::{BufRead, BufReader},
+    io::BufReader,
     net::SocketAddr,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -46,6 +46,8 @@ pub struct OpenCodeConfig {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Observation {
+    #[serde(default)]
+    pub decoding: crate::read::output::DecodeProvenance,
     pub task_id: String,
     pub attempt_id: String,
     pub session_id: Option<String>,
@@ -296,6 +298,7 @@ pub fn launch(
 /// emits step hints and activity, not a constrained designated final envelope.
 pub fn observe(dir: &Path, task: &str, attempt: &str) -> Result<Observation> {
     let mut result = Observation {
+        decoding: Default::default(),
         task_id: task.into(),
         attempt_id: attempt.into(),
         session_id: None,
@@ -309,22 +312,21 @@ pub fn observe(dir: &Path, task: &str, attempt: &str) -> Result<Observation> {
         raw_stdout: dir.join("stdout.log"),
         raw_stderr: dir.join("stderr.log"),
     };
-    let mut reader = BufReader::new(File::open(&result.raw_stdout)?);
-    loop {
-        let mut bytes = Vec::new();
-        if reader.read_until(b'\n', &mut bytes)? == 0 {
-            break;
-        }
-        if !bytes.ends_with(b"\n") {
+    let mut reader =
+        crate::read::output::Records::new(BufReader::new(File::open(&result.raw_stdout)?));
+    while let Some(record) = reader.next_record()? {
+        let Some(bytes) = record.bytes else {
             result.invalid_records += 1;
-            break;
-        }
+            result.protocol_error = Some("native decoding gap; raw capture retained".into());
+            continue;
+        };
         if bytes.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
         let value: Value = match serde_json::from_slice(&bytes) {
             Ok(value) => value,
             Err(_) => {
+                reader.gap(record.start, record.end, "invalid_json");
                 result.invalid_records += 1;
                 continue;
             }
@@ -380,6 +382,7 @@ pub fn observe(dir: &Path, task: &str, attempt: &str) -> Result<Observation> {
             result.activity_records += 1;
         }
     }
+    result.decoding = reader.provenance();
     Ok(result)
 }
 
