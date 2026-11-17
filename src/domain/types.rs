@@ -3,6 +3,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Plan {
+    #[serde(default)]
+    pub scheduling: crate::controller::admission::Scheduling,
+    #[serde(default)]
+    pub profile_defaults: crate::domain::profiles::ProfileConfig,
     pub schema_version: u32,
     pub completion: CompletionPolicy,
     pub operation_placement: crate::domain::operations::Placement,
@@ -22,6 +26,8 @@ pub enum CompletionPolicy {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Task {
+    #[serde(default)]
+    pub admission: crate::controller::admission::Requirements,
     pub id: String,
     pub title: String,
     #[serde(default, alias = "dependsOn")]
@@ -34,6 +40,11 @@ pub struct Task {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Executor {
+    Profile {
+        alias: String,
+        #[serde(default)]
+        overrides: crate::domain::profiles::ProfileConfig,
+    },
     Codex {
         #[serde(flatten)]
         config: crate::executors::codex::CodexConfig,

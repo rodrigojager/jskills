@@ -23,6 +23,7 @@ pub struct TaskStatus {
 
 #[derive(Debug, Serialize)]
 pub struct AttemptStatus {
+    pub effective_profile: serde_json::Value,
     pub id: String,
     pub process_state: String,
     pub pid: Option<u32>,
@@ -55,10 +56,19 @@ pub fn read(path: &Path, run: &str) -> Result<Status> {
     let mut tasks = Vec::new();
     for row in rows {
         let (id, state) = row?;
-        let mut attempts = conn.prepare("SELECT a.id,a.state,a.pid,a.outcome,a.summary,a.exit_code,r.id FROM attempts a LEFT JOIN receipts r ON r.attempt_id=a.id WHERE a.run_id=?1 AND a.task_id=?2 ORDER BY a.rowid")?;
+        let mut attempts = conn.prepare("SELECT a.id,a.state,a.pid,a.outcome,a.summary,a.exit_code,r.id,a.effective_profile FROM attempts a LEFT JOIN receipts r ON r.attempt_id=a.id WHERE a.run_id=?1 AND a.task_id=?2 ORDER BY a.rowid")?;
         let attempts = attempts
             .query_map([run, &id], |r| {
                 Ok(AttemptStatus {
+                    effective_profile: serde_json::from_str(&r.get::<_, String>(7)?).map_err(
+                        |error| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                7,
+                                rusqlite::types::Type::Text,
+                                Box::new(error),
+                            )
+                        },
+                    )?,
                     id: r.get(0)?,
                     process_state: r.get(1)?,
                     pid: r.get(2)?,

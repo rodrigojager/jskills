@@ -15,6 +15,8 @@ pub fn identifier(value: &str) -> Result<()> {
 }
 
 pub fn validate(plan: &Plan) -> Result<()> {
+    crate::controller::admission::validate(plan)?;
+    super::profiles::validate(&plan.profile_defaults)?;
     ensure!(
         plan.schema_version == 1,
         "unsupported schema_version (expected 1)"
@@ -22,6 +24,10 @@ pub fn validate(plan: &Plan) -> Result<()> {
     ensure!(!plan.tasks.is_empty(), "plan must contain tasks");
     let mut tasks = HashMap::new();
     for task in &plan.tasks {
+        if let super::types::Executor::Profile { alias, overrides } = &task.executor {
+            identifier(alias)?;
+            super::profiles::validate(overrides)?;
+        }
         identifier(&task.id)?;
         ensure!(
             !task.title.trim().is_empty(),

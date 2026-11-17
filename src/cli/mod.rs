@@ -1,5 +1,6 @@
 pub mod exec;
 pub mod operations;
+pub mod profiles;
 pub mod resources;
 use crate::{
     controller,
@@ -36,6 +37,8 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Action {
+    /// Manage jtasks profile aliases separately from native agent settings.
+    Profiles(profiles::Profiles),
     /// Coordinate advisory files/named resources independently of process custody.
     Resources(resources::Resources),
     /// Preview declared operation placement or read its durable outcomes.
@@ -143,6 +146,7 @@ pub fn execute() -> Result<i32> {
         action => {
             let workspace = Workspace::resolve(&cli.root, cli.data_dir.as_deref())?;
             match action {
+                Action::Profiles(profiles) => profiles::execute(&workspace, profiles),
                 Action::Resources(resources) => resources::execute(&workspace, resources),
                 Action::Exec(exec) => exec::execute(&workspace, exec),
                 Action::Operations(operations) => operations::execute(&workspace, operations),

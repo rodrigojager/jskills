@@ -218,10 +218,20 @@ impl Store {
     }
 
     pub fn intent(&mut self, run: &str, task: &str, attempt: &str) -> Result<()> {
+        self.intent_with_profile(run, task, attempt, "null")
+    }
+
+    fn intent_with_profile(
+        &mut self,
+        run: &str,
+        task: &str,
+        attempt: &str,
+        snapshot: &str,
+    ) -> Result<()> {
         let tx = self.conn.transaction()?;
         tx.execute(
-            "INSERT INTO attempts(id,run_id,task_id,state) VALUES(?1,?2,?3,'launch_intent')",
-            [attempt, run, task],
+            "INSERT INTO attempts(id,run_id,task_id,state,effective_profile) VALUES(?1,?2,?3,'launch_intent',?4)",
+            [attempt, run, task, snapshot],
         )?;
         tx.execute(
             "UPDATE tasks SET state='running' WHERE run_id=?1 AND id=?2",
@@ -230,6 +240,24 @@ impl Store {
         tx.execute("INSERT INTO journal(run_id,task_id,attempt_id,event,detail) VALUES(?1,?2,?3,'launch_intent','persisted before spawn')", [run,task,attempt])?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Resolve once at admission and persist exactly what this attempt launches.
+    pub fn prepare_attempt(
+        &mut self,
+        workspace: &Workspace,
+        run: &str,
+        task: &Task,
+        attempt: &str,
+    ) -> Result<Task> {
+        let plan: String =
+            self.conn
+                .query_row("SELECT plan FROM runs WHERE id=?1", [run], |r| r.get(0))?;
+        let plan: Plan = serde_json::from_str(&plan)?;
+        let (effective_task, snapshot) =
+            crate::domain::profiles::resolve(workspace, task, &plan.profile_defaults)?;
+        self.intent_with_profile(run, &task.id, attempt, &serde_json::to_string(&snapshot)?)?;
+        Ok(effective_task)
     }
 
     pub fn launched(&self, attempt: &str, pid: u32) -> Result<()> {
