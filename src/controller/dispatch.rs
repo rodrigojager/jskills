@@ -17,6 +17,7 @@ struct Active {
     token: String,
     child: crate::execution::custody::OwnedProcess,
     codex: bool,
+    claude: bool,
 }
 
 /// The only runtime writer: transactions are finished before process/socket waits.
@@ -133,10 +134,27 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
                             &current.id,
                         )?;
                     }
+                    if current.claude {
+                        crate::executors::claude::capture_interrupted(
+                            workspace,
+                            &current.task,
+                            &current.id,
+                        )?;
+                    }
                     store.retire(run, &current.task, &current.id, exit, true)?;
                 } else {
                     if current.codex {
                         crate::executors::codex::finish(
+                            workspace,
+                            &mut store,
+                            run,
+                            &current.task,
+                            &current.id,
+                            exit == Some(0),
+                        )?;
+                    }
+                    if current.claude {
+                        crate::executors::claude::finish(
                             workspace,
                             &mut store,
                             run,
@@ -192,6 +210,10 @@ pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
                         codex: matches!(
                             task.executor,
                             crate::domain::types::Executor::Codex { .. }
+                        ),
+                        claude: matches!(
+                            task.executor,
+                            crate::domain::types::Executor::Claude { .. }
                         ),
                     });
                     if let Err(error) = store.launched(&attempt, pid) {

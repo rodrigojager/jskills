@@ -49,6 +49,10 @@ pub enum Executor {
         #[serde(flatten)]
         config: crate::executors::codex::CodexConfig,
     },
+    Claude {
+        #[serde(flatten)]
+        config: crate::executors::claude::ClaudeConfig,
+    },
     Fixture {
         outcome: FixtureOutcome,
         #[serde(default)]

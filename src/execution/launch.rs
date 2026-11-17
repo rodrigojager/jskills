@@ -17,6 +17,11 @@ pub fn task(
     token: &str,
 ) -> Result<super::custody::OwnedProcess> {
     let ticket = crate::domain::tickets::write_attempt_ticket(workspace, task, attempt)?;
+    if let Executor::Claude { config } = &task.executor {
+        return crate::executors::claude::launch(
+            workspace, task, config, attempt, endpoint, token, &ticket,
+        );
+    }
     if let Executor::Codex { config } = &task.executor {
         return crate::executors::codex::launch(
             workspace, task, config, attempt, endpoint, token, &ticket,

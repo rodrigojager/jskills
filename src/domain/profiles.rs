@@ -218,6 +218,14 @@ pub fn resolve(
                 values["autonomy"] = json!(autonomy);
                 origins.insert("autonomy".into(), "task_or_supported_default".into());
             }
+            if let Executor::Claude { config } = executor {
+                let autonomy = match config.permissions {
+                    crate::executors::claude::PermissionMode::Autonomous => "autonomous",
+                    crate::executors::claude::PermissionMode::Restricted => "restricted",
+                };
+                values["autonomy"] = json!(autonomy);
+                origins.insert("autonomy".into(), "task_or_supported_default".into());
+            }
             return Ok((
                 task.clone(),
                 EffectiveProfile {
@@ -234,15 +242,24 @@ pub fn resolve(
     let snapshot = effective(workspace, alias, overrides, defaults)?;
     let config: ProfileConfig = serde_json::from_value(snapshot.values.clone())?;
     ensure!(
-        config.executor.as_deref() == Some("codex"),
+        matches!(config.executor.as_deref(), Some("codex" | "claude")),
         "executor {} is configured; its native adapter is not available in this build",
         config.executor.as_deref().unwrap()
     );
-    ensure!(
-        config.variant.is_none() && config.native_agent.is_none(),
-        "Codex adapter does not support variant/native_agent; use native_profile for a native Codex profile"
-    );
-    let mut value = json!({"kind":"codex", "model":config.model,"provider":config.provider,"reasoning_effort":config.effort,"native_profile":config.native_profile,"permissions":config.autonomy.unwrap()});
+    let mut value = if config.executor.as_deref() == Some("claude") {
+        ensure!(
+            config.variant.is_none() && config.native_profile.is_none(),
+            "Claude adapter does not support variant/native_profile; use native_agent for a native Claude agent"
+        );
+        json!({"kind":"claude","model":config.model,"provider":config.provider,"effort":config.effort,
+            "native_agent":config.native_agent,"permissions":config.autonomy.unwrap()})
+    } else {
+        ensure!(
+            config.variant.is_none() && config.native_agent.is_none(),
+            "Codex adapter does not support variant/native_agent; use native_profile for a native Codex profile"
+        );
+        json!({"kind":"codex", "model":config.model,"provider":config.provider,"reasoning_effort":config.effort,"native_profile":config.native_profile,"permissions":config.autonomy.unwrap()})
+    };
     for (key, item) in [
         ("executable", config.executable.map(Value::String)),
         ("launcher_args", config.launcher_args.map(|v| json!(v))),
