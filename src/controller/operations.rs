@@ -23,11 +23,13 @@ pub struct OperationStatus {
     pub repair_task: Option<String>,
     pub command_id: Option<String>,
     pub exit_code: Option<i32>,
+    pub initial: crate::domain::operations::Invocation,
+    pub repair: serde_json::Value,
 }
 
 pub fn read(conn: &Connection, run: &str) -> Result<Vec<OperationStatus>> {
     let mut statement = conn.prepare(
-        "SELECT id,state,spec,command_id FROM operations WHERE run_id=?1 ORDER BY ordinal",
+        "SELECT id,state,spec,command_id,revision FROM operations WHERE run_id=?1 ORDER BY ordinal",
     )?;
     let rows = statement
         .query_map([run], |r| {
@@ -36,11 +38,12 @@ pub fn read(conn: &Connection, run: &str) -> Result<Vec<OperationStatus>> {
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
                 r.get::<_, Option<String>>(3)?,
+                r.get::<_, String>(4)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     rows.into_iter()
-        .map(|(id, state, spec, command_id)| {
+        .map(|(id, state, spec, command_id, revision)| {
             let op: Operation = serde_json::from_str(&spec)?;
             let exit_code = if let Some(command) = &command_id {
                 conn.query_row(
@@ -51,16 +54,23 @@ pub fn read(conn: &Connection, run: &str) -> Result<Vec<OperationStatus>> {
             } else {
                 None
             };
+            let repair = super::operation_repair::facts(conn, run, &id)?;
+            let repair_task = op.repair_task.clone().or_else(|| match &op.stage {
+                Stage::Task { task } => Some(task.clone()),
+                _ => None,
+            });
             Ok(OperationStatus {
                 id,
                 state,
                 required: op.required,
-                revision: op.revision,
+                revision,
                 inputs: op.inputs,
                 stage: op.stage,
-                repair_task: op.repair_task,
+                repair_task,
                 command_id,
                 exit_code,
+                initial: op.initial,
+                repair,
             })
         })
         .collect()

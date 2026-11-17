@@ -96,6 +96,13 @@ pub fn validate(plan: &Plan) -> Result<()> {
             op.id
         );
         ensure!(
+            op.inputs
+                .iter()
+                .all(|input| super::operation_lineage::valid_input(input)),
+            "operation {} inputs must be explicit checkout-relative paths without parent traversal or globs",
+            op.id
+        );
+        ensure!(
             !op.initial.program.trim().is_empty() && !op.initial.cwd.as_os_str().is_empty(),
             "operation {} requires an initial program and cwd",
             op.id

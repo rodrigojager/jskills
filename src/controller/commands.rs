@@ -50,6 +50,22 @@ pub enum Action {
         id: String,
         reason: String,
     },
+    RepairBegin {
+        run: String,
+        operation: String,
+        worker: String,
+        request_id: String,
+    },
+    RepairFinish {
+        report: crate::domain::operation_lineage::Recheck,
+    },
+    InputsChanged {
+        run: String,
+        request_id: String,
+        revision: String,
+        inputs: Vec<String>,
+        reason: String,
+    },
     Shutdown,
 }
 #[derive(Debug, Serialize, Deserialize)]
@@ -74,6 +90,7 @@ pub struct Service {
 impl Service {
     pub fn new(workspace: &Workspace, store: &Store) -> Result<Self> {
         store.conn.execute_batch(SCHEMA)?;
+        store.conn.execute_batch(super::operation_repair::SCHEMA)?;
         // A prior controller's PID alone cannot prove custody. Keep uncertainty visible;
         // identical replay returns this receipt, and never launches a replacement.
         store.conn.execute("UPDATE managed_commands SET state='unknown', reason='prior controller custody requires reconciliation' WHERE state IN ('intent','running','stopping')", [])?;
@@ -164,7 +181,42 @@ impl Service {
     }
     fn handle(&mut self, store: &Store, action: Action) -> Result<Value> {
         match action {
-            Action::Start { spec } => self.start(store, spec),
+            Action::Start { spec } => {
+                let cycle = super::operation_repair::authorize_command(store, &spec)?;
+                let receipt = self.start(store, spec.clone())?;
+                if let Some(cycle) = cycle {
+                    super::operation_repair::record_command(
+                        store,
+                        &spec,
+                        cycle,
+                        receipt["command_id"]
+                            .as_str()
+                            .context("missing command receipt")?,
+                    )?;
+                }
+                Ok(receipt)
+            }
+            Action::RepairBegin {
+                run,
+                operation,
+                worker,
+                request_id,
+            } => super::operation_repair::begin(store, &run, &operation, &worker, &request_id),
+            Action::RepairFinish { report } => super::operation_repair::finish(store, &report),
+            Action::InputsChanged {
+                run,
+                request_id,
+                revision,
+                inputs,
+                reason,
+            } => super::operation_repair::invalidate(
+                store,
+                &run,
+                &request_id,
+                &revision,
+                &inputs,
+                &reason,
+            ),
             Action::Status { id } => status(store, &self.data, &id),
             Action::Output {
                 id,
