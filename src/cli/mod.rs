@@ -1,3 +1,5 @@
+pub mod catalog;
+pub mod doctor;
 pub mod exec;
 pub mod operations;
 pub mod profiles;
@@ -26,6 +28,9 @@ use std::{fs, net::SocketAddr, path::PathBuf};
     after_help = "Example: jtasks validate plan.json\nExample: jtasks import plan.json --run demo\nExample: jtasks run --run demo\nExample: jtasks status --run demo"
 )]
 pub struct Cli {
+    /// Emit the structured command projection (commands already default to JSON).
+    #[arg(long, global = true)]
+    pub json: bool,
     #[arg(long, global = true, default_value = ".")]
     pub root: PathBuf,
     /// Runtime data directory; relative paths are relative to the container/checkout.
@@ -37,6 +42,12 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Action {
+    /// Read cached scoped executor metadata without launching discovery helpers.
+    Executors,
+    /// Read or explicitly refresh scoped discovery metadata; never infer access.
+    Catalog(catalog::Catalog),
+    /// Read diagnostics without repairs, refresh, credentials or provider calls.
+    Doctor,
     /// Manage jtasks profile aliases separately from native agent settings.
     Profiles(profiles::Profiles),
     /// Coordinate advisory files/named resources independently of process custody.
@@ -105,9 +116,18 @@ pub fn execute() -> Result<i32> {
     match cli.command {
         Action::Validate { plan } => {
             let plan = load_plan(&plan)?;
+            let workspace = Workspace::resolve(&cli.root, cli.data_dir.as_deref())?;
+            let mut capabilities = Vec::new();
+            for task in &plan.tasks {
+                let (_, snapshot) =
+                    crate::domain::profiles::resolve(&workspace, task, &plan.profile_defaults)?;
+                capabilities.push(
+                    serde_json::json!({"task":task.id,"validation":snapshot.catalog_validation}),
+                );
+            }
             println!(
                 "{}",
-                serde_json::json!({"valid":true,"tasks":plan.tasks.len(),"operations":plan.operations.len(),"operation_placement":plan.operation_placement})
+                serde_json::json!({"valid":true,"tasks":plan.tasks.len(),"operations":plan.operations.len(),"operation_placement":plan.operation_placement,"capabilities":capabilities})
             );
             Ok(0)
         }
@@ -146,6 +166,12 @@ pub fn execute() -> Result<i32> {
         action => {
             let workspace = Workspace::resolve(&cli.root, cli.data_dir.as_deref())?;
             match action {
+                Action::Executors => {
+                    println!("{}", catalog::executors(&workspace)?);
+                    Ok(0)
+                }
+                Action::Catalog(args) => catalog::execute(&workspace, args),
+                Action::Doctor => doctor::execute(&workspace),
                 Action::Profiles(profiles) => profiles::execute(&workspace, profiles),
                 Action::Resources(resources) => resources::execute(&workspace, resources),
                 Action::Exec(exec) => exec::execute(&workspace, exec),

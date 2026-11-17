@@ -52,6 +52,8 @@ pub struct EffectiveProfile {
     pub executor_version: Option<String>,
     pub catalog_reference: Option<String>,
     pub discovery: String,
+    #[serde(default)]
+    pub catalog_validation: Option<crate::executors::catalog::Validation>,
 }
 
 pub fn user_file() -> Result<PathBuf> {
@@ -197,6 +199,7 @@ pub fn effective(
         executor_version: None,
         catalog_reference: None,
         discovery: "not_discovered; configuration does not prove account/model access".into(),
+        catalog_validation: None,
     })
 }
 
@@ -236,20 +239,36 @@ pub fn resolve(
                 values["autonomy"] = serde_json::to_value(&config.permissions)?;
                 origins.insert("autonomy".into(), "task_or_supported_default".into());
             }
+            let validation = if matches!(executor, Executor::Fixture { .. }) {
+                None
+            } else {
+                Some(crate::executors::catalog::annotate(
+                    workspace, task, &values,
+                )?)
+            };
+            let version = validation
+                .as_ref()
+                .and_then(|v| v.catalog.as_ref())
+                .and_then(|c| c.executor_version.clone());
+            let reference = validation
+                .as_ref()
+                .and_then(|v| v.catalog.as_ref())
+                .map(|c| format!("{}:{}:{}", c.executor, c.scope.configuration, c.observed_at));
             return Ok((
                 task.clone(),
                 EffectiveProfile {
                     alias: None,
                     values,
                     origins,
-                    executor_version: None,
-                    catalog_reference: None,
+                    executor_version: version,
+                    catalog_reference: reference,
                     discovery: "explicit_executor; native defaults/access not discovered".into(),
+                    catalog_validation: validation,
                 },
             ));
         }
     };
-    let snapshot = effective(workspace, alias, overrides, defaults)?;
+    let mut snapshot = effective(workspace, alias, overrides, defaults)?;
     let config: ProfileConfig = serde_json::from_value(snapshot.values.clone())?;
     ensure!(
         matches!(
@@ -291,6 +310,17 @@ pub fn resolve(
     }
     let mut task = task.clone();
     task.executor = serde_json::from_value(value)?;
+    let validation = crate::executors::catalog::annotate(workspace, &task, &snapshot.values)?;
+    snapshot.executor_version = validation
+        .catalog
+        .as_ref()
+        .and_then(|c| c.executor_version.clone());
+    snapshot.catalog_reference = validation
+        .catalog
+        .as_ref()
+        .map(|c| format!("{}:{}:{}", c.executor, c.scope.configuration, c.observed_at));
+    snapshot.discovery = validation.state.clone();
+    snapshot.catalog_validation = Some(validation);
     Ok((task, snapshot))
 }
 

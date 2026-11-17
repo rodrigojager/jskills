@@ -24,6 +24,11 @@ pub enum Action {
     /// Resolve an alias, optionally using explicit task override/run-default JSON.
     Show {
         alias: String,
+        /// The effective values and their origins are always shown.
+        #[arg(long)]
+        resolved: bool,
+        #[arg(long, default_value = "native-default")]
+        catalog_scope: String,
         #[arg(long)]
         overrides: Option<PathBuf>,
         #[arg(long)]
@@ -65,12 +70,33 @@ pub fn execute(workspace: &Workspace, args: Profiles) -> Result<i32> {
             alias,
             overrides,
             defaults,
-        } => json!(profiles::effective(
-            workspace,
-            &alias,
-            &config(overrides)?,
-            &config(defaults)?
-        )?),
+            resolved: _,
+            catalog_scope,
+        } => {
+            let mut effective =
+                profiles::effective(workspace, &alias, &config(overrides)?, &config(defaults)?)?;
+            let values = &effective.values;
+            let executor = values["executor"].as_str().unwrap();
+            let args: Vec<String> = serde_json::from_value(values["launcher_args"].clone())?;
+            let scope = crate::executors::catalog::scope(
+                workspace,
+                values["executable"].as_str().unwrap_or(executor),
+                &args,
+                &catalog_scope,
+            );
+            if let Some(snapshot) = crate::executors::catalog::read(workspace, executor, &scope)? {
+                effective.executor_version = snapshot.executor_version.clone();
+                effective.catalog_reference = Some(format!(
+                    "{}:{}:{}",
+                    executor, catalog_scope, snapshot.observed_at
+                ));
+                effective.discovery = format!(
+                    "cached {}; account access not verified",
+                    snapshot.availability
+                );
+            }
+            json!(effective)
+        }
         Action::Set { alias, file, scope } => {
             let config: ProfileConfig = serde_json::from_slice(&fs::read(file)?)
                 .context("expected profile configuration object")?;

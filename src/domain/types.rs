@@ -26,6 +26,11 @@ pub enum CompletionPolicy {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Task {
+    /// Explicit, attributable permission for incomplete discovery, never invalidity.
+    #[serde(default)]
+    pub unknown_capabilities: Option<crate::executors::catalog::UnknownException>,
+    #[serde(default = "default_catalog_scope")]
+    pub catalog_scope: String,
     #[serde(default)]
     pub admission: crate::controller::admission::Requirements,
     pub id: String,
@@ -35,6 +40,10 @@ pub struct Task {
     pub executor: Executor,
     #[serde(default)]
     pub context: crate::domain::tickets::TicketContext,
+}
+
+fn default_catalog_scope() -> String {
+    "native-default".into()
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
