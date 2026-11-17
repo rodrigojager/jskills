@@ -1,3 +1,5 @@
+pub mod identity;
+pub mod registry;
 use anyhow::{Context, Result};
 use std::{
     fs::{File, OpenOptions},

@@ -1,5 +1,6 @@
 pub mod exec;
 pub mod operations;
+pub mod resources;
 use crate::{
     controller,
     domain::{
@@ -35,6 +36,8 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Action {
+    /// Coordinate advisory files/named resources independently of process custody.
+    Resources(resources::Resources),
     /// Preview declared operation placement or read its durable outcomes.
     Operations(operations::Operations),
     /// Start, inspect, page, await and stop managed commands.
@@ -140,6 +143,7 @@ pub fn execute() -> Result<i32> {
         action => {
             let workspace = Workspace::resolve(&cli.root, cli.data_dir.as_deref())?;
             match action {
+                Action::Resources(resources) => resources::execute(&workspace, resources),
                 Action::Exec(exec) => exec::execute(&workspace, exec),
                 Action::Operations(operations) => operations::execute(&workspace, operations),
                 Action::Import { plan, run } => {
