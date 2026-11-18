@@ -2,11 +2,10 @@ use crate::{
     domain::autonomy::{Answer, Question},
     resources::ControllerGuard,
     storage::{Store, Workspace},
-    transport::{self, ControlEndpoint, Request},
+    transport::{self, Request},
 };
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use clap::Args;
-use std::fs;
 
 #[derive(Args)]
 pub struct Questions {
@@ -93,9 +92,8 @@ pub fn answer(workspace: &Workspace, args: AnswerArgs) -> Result<i32> {
             serde_json::json!({"accepted":true,"duplicate":duplicate,"resume":"explicit bounded retry required"})
         );
     } else {
-        let endpoint: ControlEndpoint =
-            serde_json::from_slice(&fs::read(workspace.data.join("control.json"))?)?;
-        ensure!(endpoint.run == args.run, "controller serves another run");
+        let endpoint = transport::control_endpoint(&workspace.data, &args.run)
+            .context("checkout writer is busy; this run's task controller is unavailable")?;
         println!(
             "{}",
             serde_json::to_string(&transport::send(

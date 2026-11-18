@@ -295,6 +295,43 @@ fn explicit_stop_retires_process_and_explicit_run_resumes_with_new_identity() {
 }
 
 #[test]
+fn stop_records_the_actor_and_a_stopped_run_answers_exit_3() {
+    let f = Fixture::new();
+    let mut first = task("A", &[], "completed", "resumed");
+    first["executor"]["delay_ms"] = json!(3000);
+    f.import(json!([first]));
+    let mut controller = f
+        .command()
+        .args(["run", "--run", "demo"])
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    f.await_status(|s| {
+        s["tasks"][0]["attempts"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty() && a[0]["process_state"] == "running")
+    });
+    let stop = f.call(&["stop", "--run", "demo", "--actor", "web"]);
+    assert!(stop.status.success());
+    controller.wait().unwrap();
+    let conn = rusqlite::Connection::open(f.data.join("state.sqlite3")).unwrap();
+    let detail: String = conn
+        .query_row(
+            "SELECT detail FROM journal WHERE event='stop_requested'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&detail).unwrap()["actor"],
+        "web"
+    );
+    let again = f.call(&["stop", "--run", "demo"]);
+    assert_eq!(again.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&again.stdout).contains("already stopped"));
+}
+
+#[test]
 fn container_and_product_resolve_the_same_configured_runtime_root() {
     let f = Fixture::new();
     let container = f.root.join("container");

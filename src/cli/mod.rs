@@ -26,7 +26,7 @@ use crate::{
     read::projections::{Request as ReadRequest, View},
     resources::ControllerGuard,
     storage::{Store, Workspace},
-    transport::{self, ControlEndpoint, Request},
+    transport::{self, Request},
 };
 use anyhow::{Context, Result, ensure};
 use clap::{FromArgMatches, Parser, Subcommand};
@@ -279,13 +279,10 @@ pub fn execute() -> Result<i32> {
                         println!("the run is already stopped");
                         Ok(3)
                     };
-                    let Ok(bytes) = fs::read(workspace.data.join("control.json")) else {
+                    // Only this run's own live controller; a stale or foreign endpoint is ignored.
+                    let Some(endpoint) = transport::control_endpoint(&workspace.data, &run) else {
                         return already();
                     };
-                    let endpoint: ControlEndpoint = serde_json::from_slice(&bytes)?;
-                    if endpoint.run != run {
-                        return already();
-                    }
                     let Ok(response) = transport::send(
                         endpoint.endpoint,
                         &Request::Stop {

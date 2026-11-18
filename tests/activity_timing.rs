@@ -469,7 +469,7 @@ fn a_long_reader_and_a_flooding_worker_do_not_stop_the_controller() {
     // Once the controller is up (its endpoint is written, the database is in WAL), a reader holds a read
     // transaction for 4 seconds while the worker floods, longer than the old 2 s wait.
     let up = Instant::now() + Duration::from_secs(30);
-    while !f.data.join("control.json").exists() {
+    while !jtasks::transport::control_file(&f.data, "demo").exists() {
         assert!(Instant::now() < up, "the controller never started");
         std::thread::sleep(Duration::from_millis(20));
     }

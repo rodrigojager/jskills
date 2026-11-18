@@ -176,19 +176,7 @@ pub fn resolve_current(workspace: &Workspace, run: Option<String>) -> Result<Str
 }
 
 fn controller_live(workspace: &Workspace, run: &str) -> bool {
-    let Ok(bytes) = std::fs::read(workspace.data.join("control.json")) else {
-        return false;
-    };
-    let Ok(endpoint) = serde_json::from_slice::<crate::transport::ControlEndpoint>(&bytes) else {
-        return false;
-    };
-    endpoint.run == run
-        && endpoint.endpoint.ip().is_loopback()
-        && std::net::TcpStream::connect_timeout(
-            &endpoint.endpoint,
-            std::time::Duration::from_millis(300),
-        )
-        .is_ok()
+    crate::transport::control_endpoint(&workspace.data, run).is_some()
 }
 
 fn runs_list(

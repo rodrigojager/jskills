@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     fs::{self, File},
-    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom},
     net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -87,7 +87,8 @@ pub struct Service {
 }
 
 impl Service {
-    pub fn new(workspace: &Workspace, store: &Store) -> Result<Self> {
+    /// `run` is the run a task controller serves; `None` is the standalone `exec serve` service.
+    pub fn new(workspace: &Workspace, store: &Store, run: Option<&str>) -> Result<Self> {
         store.conn.execute_batch(SCHEMA)?;
         store.conn.execute_batch(super::operation_repair::SCHEMA)?;
         // A prior controller's PID alone cannot prove custody. Keep uncertainty visible;
@@ -99,16 +100,10 @@ impl Service {
             endpoint: listener.local_addr()?,
             token: uuid::Uuid::new_v4().to_string(),
         };
-        let mut options = fs::OpenOptions::new();
-        options.create(true).truncate(true).write(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(workspace.data.join("commands-control.json"))?;
-        file.write_all(&serde_json::to_vec(&endpoint)?)?;
-        file.sync_all()?;
+        crate::transport::write_endpoint_file(
+            &crate::transport::commands_file(&workspace.data, run),
+            &endpoint,
+        )?;
         let service = Self {
             listener,
             endpoint,
@@ -510,7 +505,7 @@ pub fn serve(workspace: &Workspace) -> Result<i32> {
         "import a plan before serving commands"
     );
     let store = Store::open(workspace, owner.guard())?;
-    let mut service = Service::new(workspace, &store)?;
+    let mut service = Service::new(workspace, &store, None)?;
     owner.endpoint(service.endpoint.endpoint)?;
     let mut checker = super::due::Checker::new();
     while !service.shutdown || service.has_live() {
@@ -600,6 +595,21 @@ pub fn read_message<T: serde::de::DeserializeOwned>(stream: &mut TcpStream) -> R
     );
     Ok(serde_json::from_str(&line)?)
 }
+/// The command endpoint that serves `run`: its task controller's own file while that controller answers, otherwise
+/// the standalone `exec serve` file. A stale file of a controller that is gone is ignored.
+pub fn endpoint_for(data: &Path, run: Option<&str>) -> Result<Endpoint> {
+    let read =
+        |path: PathBuf| -> Option<Endpoint> { serde_json::from_slice(&fs::read(path).ok()?).ok() };
+    if let Some(run) = run.filter(|run| crate::domain::validation::identifier(run).is_ok())
+        && let Some(endpoint) = read(crate::transport::commands_file(data, Some(run)))
+        && crate::transport::answers(endpoint.endpoint)
+    {
+        return Ok(endpoint);
+    }
+    read(crate::transport::commands_file(data, None))
+        .context("no active command controller; use exec serve or run")
+}
+
 pub fn send(endpoint: &Endpoint, action: Action) -> Result<Value> {
     ensure!(
         endpoint.endpoint.ip().is_loopback(),

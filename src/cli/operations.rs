@@ -52,10 +52,9 @@ pub enum Action {
     },
 }
 pub fn execute(workspace: &Workspace, command: Operations) -> Result<i32> {
-    let control = |action| -> Result<i32> {
-        let endpoint: Endpoint = serde_json::from_slice(&std::fs::read(
-            workspace.data.join("commands-control.json"),
-        )?)?;
+    // The named run's own controller when it is live, otherwise the standalone `exec serve` one.
+    let control = |run: &str, action| -> Result<i32> {
+        let endpoint: Endpoint = commands::endpoint_for(&workspace.data, Some(run))?;
         println!("{}", commands::send(&endpoint, action)?);
         Ok(0)
     };
@@ -83,27 +82,35 @@ pub fn execute(workspace: &Workspace, command: Operations) -> Result<i32> {
             operation,
             worker,
             request_id,
-        } => control(ControlAction::RepairBegin {
-            run,
-            operation,
-            worker,
-            request_id,
-        }),
-        Action::RepairFinish { report } => control(ControlAction::RepairFinish {
-            report: serde_json::from_slice(&std::fs::read(report)?)?,
-        }),
+        } => control(
+            &run.clone(),
+            ControlAction::RepairBegin {
+                run,
+                operation,
+                worker,
+                request_id,
+            },
+        ),
+        Action::RepairFinish { report } => {
+            let report: crate::domain::operation_lineage::Recheck =
+                serde_json::from_slice(&std::fs::read(report)?)?;
+            control(&report.run.clone(), ControlAction::RepairFinish { report })
+        }
         Action::InputsChanged {
             run,
             request_id,
             revision,
             input,
             reason,
-        } => control(ControlAction::InputsChanged {
-            run,
-            request_id,
-            revision,
-            inputs: input,
-            reason,
-        }),
+        } => control(
+            &run.clone(),
+            ControlAction::InputsChanged {
+                run,
+                request_id,
+                revision,
+                inputs: input,
+                reason,
+            },
+        ),
     }
 }

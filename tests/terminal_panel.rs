@@ -41,6 +41,12 @@ fn offline_watch_is_pure_read_and_non_tty_only_reports_transition_and_final() {
     let f = Fixture::new();
     f.import(json!([task("A", &[], "silent", "")]));
     fs::write(f.data.join("control.json"), "MUST_NOT_CONTACT_CONTROL").unwrap();
+    fs::create_dir_all(jtasks::transport::run_folder(&f.data, "demo")).unwrap();
+    fs::write(
+        jtasks::transport::control_file(&f.data, "demo"),
+        "MUST_NOT_CONTACT_CONTROL",
+    )
+    .unwrap();
     let before = files(&f.data);
     let output = f.call(&[
         "watch",

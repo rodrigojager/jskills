@@ -3,7 +3,7 @@ use crate::{
     execution::commands::CommandSpec,
     storage::Workspace,
 };
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::{Args, Subcommand};
 use serde_json::Value;
 use std::{
@@ -58,13 +58,9 @@ pub fn execute(workspace: &Workspace, exec: Exec) -> Result<i32> {
     if matches!(exec.action, ExecAction::Serve) {
         return commands::serve(workspace);
     }
-    let endpoint = || -> Result<Endpoint> {
-        serde_json::from_slice(
-            &fs::read(workspace.data.join("commands-control.json"))
-                .context("no active command controller; use exec serve or run")?,
-        )
-        .map_err(Into::into)
-    };
+    // The run's own controller when it is live, otherwise the standalone `exec serve` one.
+    let endpoint =
+        |run: Option<&str>| -> Result<Endpoint> { commands::endpoint_for(&workspace.data, run) };
     let read = |id: &str, output_args: Option<(&str, u64, usize)>| -> Result<Value> {
         use crate::read::projections::{self, Request, View};
         let mut request = Request::new(
@@ -87,7 +83,8 @@ pub fn execute(workspace: &Workspace, exec: Exec) -> Result<i32> {
     let value = match exec.action {
         ExecAction::Start { request } => {
             let spec: CommandSpec = serde_json::from_slice(&fs::read(request)?)?;
-            commands::send(&endpoint()?, Action::Start { spec })?
+            let run = spec.run.clone();
+            commands::send(&endpoint(Some(&run))?, Action::Start { spec })?
         }
         ExecAction::Status { id } => read(&id, None)?,
         ExecAction::Output {
@@ -113,9 +110,12 @@ pub fn execute(workspace: &Workspace, exec: Exec) -> Result<i32> {
             }
         }
         ExecAction::Stop { id, reason } => {
-            commands::send(&endpoint()?, Action::Stop { id, reason })?
+            // The command's run, when its receipt is readable, names the controller that owns it.
+            let receipt = read(&id, None).ok();
+            let run = receipt.as_ref().and_then(|r| r["run"].as_str());
+            commands::send(&endpoint(run)?, Action::Stop { id, reason })?
         }
-        ExecAction::Shutdown => commands::send(&endpoint()?, Action::Shutdown)?,
+        ExecAction::Shutdown => commands::send(&endpoint(None)?, Action::Shutdown)?,
         ExecAction::Serve => unreachable!(),
     };
     println!("{}", serde_json::to_string(&value)?);

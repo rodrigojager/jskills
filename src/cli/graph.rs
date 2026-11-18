@@ -36,11 +36,8 @@ pub fn execute(workspace: &Workspace, args: Graph) -> Result<i32> {
             crate::controller::graph::propose(workspace, &store, &run, &proposal)?
         }
         Err(_) => {
-            let endpoint: ControlEndpoint = serde_json::from_slice(
-                &fs::read(workspace.data.join("control.json"))
-                    .context("checkout writer busy; task controller unavailable")?,
-            )?;
-            ensure!(endpoint.run == run, "controller serves another run");
+            let endpoint = transport::control_endpoint(&workspace.data, &run)
+                .context("checkout writer busy; this run's task controller is unavailable")?;
             send(workspace, endpoint, run, proposal)?
                 .graph
                 .context("controller returned no graph receipt")?

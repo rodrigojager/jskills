@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     io::{BufRead, BufReader, Write},
     net::{SocketAddr, TcpStream},
+    path::{Path, PathBuf},
     time::Duration,
 };
 
@@ -58,6 +59,8 @@ pub enum Request {
     Stop {
         token: String,
         run: String,
+        #[serde(default)]
+        actor: Option<String>,
     },
     Retry {
         token: String,
@@ -84,6 +87,60 @@ pub struct ControlEndpoint {
     pub endpoint: SocketAddr,
     pub token: String,
     pub run: String,
+}
+
+/// The endpoint folder of one run. Each run has its own, so controllers started from two checkouts that share one
+/// data folder never overwrite each other's endpoint.
+pub fn run_folder(data: &Path, run: &str) -> PathBuf {
+    data.join("controllers").join(run)
+}
+
+/// The control endpoint file of one run's task controller.
+pub fn control_file(data: &Path, run: &str) -> PathBuf {
+    run_folder(data, run).join("control.json")
+}
+
+/// The managed-command endpoint file: a run controller's own, or the standalone `exec serve` one.
+pub fn commands_file(data: &Path, run: Option<&str>) -> PathBuf {
+    match run {
+        Some(run) => run_folder(data, run).join("commands-control.json"),
+        None => data.join("commands-control.json"),
+    }
+}
+
+/// Write an endpoint file (owner-only on Unix), creating the run's folder.
+pub fn write_endpoint_file(path: &Path, value: &impl Serialize) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(&serde_json::to_vec(value)?)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+/// Whether a loopback endpoint accepts a connection now. The file of a controller that is gone does not.
+pub fn answers(endpoint: SocketAddr) -> bool {
+    endpoint.ip().is_loopback()
+        && TcpStream::connect_timeout(&endpoint, Duration::from_millis(300)).is_ok()
+}
+
+/// The live task controller endpoint of `run`: its own file, or the shared file an older controller wrote when that
+/// file names `run`. A missing, unreadable or stale file, or one of another run, gives `None`.
+pub fn control_endpoint(data: &Path, run: &str) -> Option<ControlEndpoint> {
+    crate::domain::validation::identifier(run).ok()?;
+    [control_file(data, run), data.join("control.json")]
+        .iter()
+        .filter_map(|path| std::fs::read(path).ok())
+        .filter_map(|bytes| serde_json::from_slice::<ControlEndpoint>(&bytes).ok())
+        .find(|endpoint| endpoint.run == run && answers(endpoint.endpoint))
 }
 
 pub fn send(endpoint: SocketAddr, request: &Request) -> Result<Response> {

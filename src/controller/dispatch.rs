@@ -6,7 +6,6 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use std::{
-    fs,
     io::{self, IsTerminal},
     net::{TcpListener, TcpStream},
     time::{Duration, Instant},
@@ -54,7 +53,7 @@ pub fn run_with_panel(
     store.check_checkout(run, &workspace.checkout)?;
     crate::domain::autonomy::launch(&store.conn, run, restricted)?;
     super::questions::project(workspace, &store.conn, run)?;
-    let mut commands = crate::controller::commands::Service::new(workspace, &store)?;
+    let mut commands = crate::controller::commands::Service::new(workspace, &store, Some(run))?;
     let mut clocks = super::clock::Clock::start(&store.conn, run, super::clock::utc_ms())?;
     super::reconcile::attempts(workspace, &mut store, run)?;
     super::reviews::reconcile(workspace, &store, run)?;
@@ -77,7 +76,7 @@ pub fn run_with_panel(
         token: uuid::Uuid::new_v4().to_string(),
         run: run.into(),
     };
-    write_endpoint(workspace, &endpoint)?;
+    transport::write_endpoint_file(&transport::control_file(&workspace.data, run), &endpoint)?;
     owner.endpoint(endpoint.endpoint)?;
     store.set_run_state(run, "running")?;
     let mut dashboard = crate::read::web::Server::bind(workspace, run)?;
@@ -93,6 +92,9 @@ pub fn run_with_panel(
     clocks.checkpoint(&store.conn, run)?;
     loop {
         dashboard.poll()?;
+        if dashboard.take_stop().is_some() {
+            stopped = true;
+        }
         if Instant::now() >= next_panel {
             if let Some(display) = &mut panel {
                 // A disconnected monitoring sink never shuts down the controller.
@@ -277,11 +279,20 @@ pub fn run_with_panel(
                 Request::Stop {
                     token,
                     run: requested,
+                    actor,
                 } => {
                     ensure!(
                         token == endpoint.token && requested == run,
                         "invalid stop scope"
                     );
+                    store.conn.execute(
+                        "INSERT INTO journal(run_id,event,detail) VALUES(?1,'stop_requested',?2)",
+                        rusqlite::params![
+                            run,
+                            serde_json::json!({"actor": actor.as_deref().unwrap_or("cli")})
+                                .to_string()
+                        ],
+                    )?;
                     stopped = true;
                     Ok(false)
                 }
@@ -604,19 +615,4 @@ fn accept(listener: &TcpListener) -> Result<Option<TcpStream>> {
         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
         Err(e) => Err(e.into()),
     }
-}
-
-fn write_endpoint(workspace: &Workspace, endpoint: &ControlEndpoint) -> Result<()> {
-    use std::io::Write;
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(workspace.data.join("control.json"))?;
-    file.write_all(&serde_json::to_vec(endpoint)?)?;
-    file.sync_all()?;
-    Ok(())
 }

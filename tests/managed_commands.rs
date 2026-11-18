@@ -268,7 +268,7 @@ fn foreground_run_owns_followup_commands_after_initial_worker_finishes() {
             .unwrap(),
     );
     let started = Instant::now();
-    while !f.data.join("commands-control.json").exists() {
+    while !jtasks::transport::commands_file(&f.data, Some("demo")).exists() {
         assert!(started.elapsed() < Duration::from_secs(5));
         std::thread::sleep(Duration::from_millis(10));
     }

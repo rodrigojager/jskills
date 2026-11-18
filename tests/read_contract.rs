@@ -173,6 +173,17 @@ fn all_read_surfaces_share_identity_snapshot_and_never_write_or_contact_control(
     // Invalid endpoints and credential-shaped content must never be consulted by reads.
     fs::write(w.data.join("control.json"), "DO_NOT_LEAK").unwrap();
     fs::write(w.data.join("commands-control.json"), "DO_NOT_LEAK").unwrap();
+    fs::create_dir_all(jtasks::transport::run_folder(&w.data, "demo")).unwrap();
+    fs::write(
+        jtasks::transport::control_file(&w.data, "demo"),
+        "DO_NOT_LEAK",
+    )
+    .unwrap();
+    fs::write(
+        jtasks::transport::commands_file(&w.data, Some("demo")),
+        "DO_NOT_LEAK",
+    )
+    .unwrap();
     let before = files(&w.data);
     let mut common = None;
     for args in [

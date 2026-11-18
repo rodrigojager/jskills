@@ -271,8 +271,10 @@ print(json.dumps({'type':'turn.completed','usage':{}}),flush=True)
         true
     );
     // The management endpoint is live. A worker token must fail this action.
-    let management: jtasks::transport::ControlEndpoint =
-        serde_json::from_slice(&fs::read(f.data.join("control.json")).unwrap()).unwrap();
+    let management: jtasks::transport::ControlEndpoint = serde_json::from_slice(
+        &fs::read(jtasks::transport::control_file(&f.data, "demo")).unwrap(),
+    )
+    .unwrap();
     assert!(
         jtasks::transport::send(
             management.endpoint,

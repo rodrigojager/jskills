@@ -1,7 +1,7 @@
 use crate::{
     resources::ControllerGuard,
     storage::{Store, Workspace},
-    transport::{self, ControlEndpoint, Request},
+    transport::{self, Request},
 };
 use anyhow::{Context, Result, ensure};
 use clap::Args;
@@ -39,11 +39,9 @@ pub fn execute(workspace: &Workspace, args: Retry) -> Result<i32> {
             )?
         }
         Err(_) => {
-            let endpoint: ControlEndpoint = serde_json::from_slice(
-                &std::fs::read(workspace.data.join("control.json"))
-                    .context("checkout writer is busy; foreground task controller unavailable")?,
+            let endpoint = transport::control_endpoint(&workspace.data, &args.run).context(
+                "checkout writer is busy; this run's foreground task controller is unavailable",
             )?;
-            ensure!(endpoint.run == args.run, "controller serves another run");
             transport::send(
                 endpoint.endpoint,
                 &Request::Retry {
