@@ -30,11 +30,21 @@ pub struct OperationStatus {
 }
 
 pub fn read(conn: &Connection, run: &str) -> Result<Vec<OperationStatus>> {
+    read_page(conn, run, 0, i64::MAX)
+}
+
+/// Only the requested page is loaded from storage.
+pub fn read_page(
+    conn: &Connection,
+    run: &str,
+    after: i64,
+    limit: i64,
+) -> Result<Vec<OperationStatus>> {
     let mut statement = conn.prepare(
-        "SELECT id,state,spec,command_id,revision FROM operations WHERE run_id=?1 ORDER BY ordinal",
+        "SELECT id,state,spec,command_id,revision FROM operations WHERE run_id=?1 ORDER BY ordinal LIMIT ?2 OFFSET ?3",
     )?;
     let rows = statement
-        .query_map([run], |r| {
+        .query_map(params![run, limit, after], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,

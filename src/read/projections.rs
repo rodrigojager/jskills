@@ -300,7 +300,7 @@ fn attach(mut payload: Value, metadata: Value) -> Value {
     }
     let mut omissions = Vec::new();
     bound(&mut payload, "", &mut omissions);
-    payload["projection_limits"] = json!({"max_items_per_nested_list":MAX_ITEMS,"max_text_bytes":16384,"omissions":omissions,"state_snapshot_memory":"status and operations currently materialize persisted graph/history before bounding the response; raw transcripts are never loaded"});
+    payload["projection_limits"] = json!({"max_items_per_nested_list":MAX_ITEMS,"max_text_bytes":16384,"omissions":omissions,"state_snapshot_memory":"status and operations read only the requested page of tasks and operations, with the latest attempts per task; raw transcripts are never loaded"});
     payload
 }
 fn bound(value: &mut Value, path: &str, omissions: &mut Vec<Value>) {
@@ -398,17 +398,18 @@ pub fn read(workspace: &Workspace, request: &Request) -> Result<Value> {
     }
     let payload = match request.view {
         View::Status => {
-            let mut value = serde_json::to_value(super::status::from_connection(&conn, &run)?)?;
-            let tasks = value["tasks"].as_array_mut().unwrap();
-            let total = tasks.len() as u64;
-            let items: Vec<_> = tasks
-                .iter()
-                .skip(request.after as usize)
-                .take(request.limit)
-                .cloned()
-                .collect();
-            value["tasks"] = json!(items);
-            value["page"] = pagination(request.after, items.len(), request.limit, total, rev);
+            let snapshot = super::status::page(
+                &conn,
+                &run,
+                sql_cursor(request.after)?,
+                sql_limit(request.limit)?,
+                0,
+                sql_limit(MAX_ITEMS)?,
+            )?;
+            let total = snapshot.tasks_total;
+            let mut value = serde_json::to_value(snapshot)?;
+            let items = value["tasks"].as_array().map_or(0, Vec::len);
+            value["page"] = pagination(request.after, items, request.limit, total, rev);
             value["pending_verification"] =
                 json!(!value["verification_complete"].as_bool().unwrap_or(false));
             let mut query =
@@ -482,14 +483,14 @@ pub fn read(workspace: &Workspace, request: &Request) -> Result<Value> {
             json!({"run":run,"task":task,"clock":clock(&conn,&run,&task)?,"attempts":records,"page":pagination(request.after,records.len(),request.limit,total,rev)})
         }
         View::Operations => {
-            let snapshot = super::status::from_connection(&conn, &run)?;
-            let total = snapshot.operations.len() as u64;
-            let operations: Vec<_> = snapshot
-                .operations
-                .into_iter()
-                .skip(request.after as usize)
-                .take(request.limit)
-                .collect();
+            let snapshot = super::status::operations_page(
+                &conn,
+                &run,
+                sql_cursor(request.after)?,
+                sql_limit(request.limit)?,
+            )?;
+            let total = snapshot.total;
+            let operations = snapshot.operations;
             json!({"run":run,"verification_complete":snapshot.verification_complete,"pending_verification":!snapshot.verification_complete,"page":pagination(request.after,operations.len(),request.limit,total,rev),"operations":operations})
         }
         View::Decisions | View::Questions => records(&conn, &run, request)?,
