@@ -29,8 +29,54 @@ pub fn initialize(conn: &Connection) -> Result<()> {
     conn.execute_batch("CREATE TABLE IF NOT EXISTS execution_reviews(attempt_id TEXT PRIMARY KEY REFERENCES attempts(id),run_id TEXT NOT NULL,task_id TEXT NOT NULL,policy TEXT NOT NULL,estimate_seconds INTEGER,state TEXT NOT NULL,generation INTEGER NOT NULL DEFAULT 1,infrastructure_retries INTEGER NOT NULL DEFAULT 0,action TEXT,reason TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS reviewer_calls(id TEXT PRIMARY KEY,run_id TEXT NOT NULL,task_id TEXT NOT NULL,attempt_id TEXT NOT NULL REFERENCES execution_reviews(attempt_id),generation INTEGER NOT NULL,state TEXT NOT NULL,invoked INTEGER NOT NULL DEFAULT 0,started_ms INTEGER,deadline_ms INTEGER,session TEXT,evidence TEXT NOT NULL,response TEXT,detail TEXT NOT NULL DEFAULT '');
 CREATE UNIQUE INDEX IF NOT EXISTS one_live_reviewer ON reviewer_calls(attempt_id) WHERE state IN ('intent','running','stopping','unknown');
-CREATE TRIGGER IF NOT EXISTS immutable_reviewer_identity BEFORE UPDATE OF id,run_id,task_id,attempt_id,generation,evidence ON reviewer_calls BEGIN SELECT RAISE(ABORT,'review identity and evidence are immutable'); END;")?;
+CREATE TRIGGER IF NOT EXISTS immutable_reviewer_identity BEFORE UPDATE OF id,run_id,task_id,attempt_id,generation,evidence ON reviewer_calls BEGIN SELECT RAISE(ABORT,'review identity and evidence are immutable'); END;
+CREATE TABLE IF NOT EXISTS reviewer_selections(review_id TEXT PRIMARY KEY REFERENCES reviewer_calls(id),selection TEXT NOT NULL);
+CREATE TRIGGER IF NOT EXISTS immutable_reviewer_selection BEFORE UPDATE ON reviewer_selections BEGIN SELECT RAISE(ABORT,'review observer selection is immutable'); END;")?;
     Ok(())
+}
+
+/// The observer a due review launches: a direct observer as written, or an
+/// alias resolved from the project's aliases at this moment.
+pub struct Selection {
+    pub observer: Observer,
+    pub record: Value,
+}
+
+/// Resolve the policy's observer now. An alias uses the run's profile defaults
+/// and refuses an executor the observer does not support.
+pub fn resolve_observer(
+    workspace: &Workspace,
+    conn: &Connection,
+    run: &str,
+    policy: &Policy,
+) -> Result<Selection> {
+    let observer = policy
+        .observer
+        .as_ref()
+        .context("execution observer is unconfigured")?;
+    let Observer::Profile { alias, overrides } = observer else {
+        return Ok(Selection {
+            observer: observer.clone(),
+            record: json!({"form":"direct","alias":null,"observer":observer}),
+        });
+    };
+    let plan: Option<String> = conn
+        .query_row("SELECT plan FROM runs WHERE id=?1", [run], |r| r.get(0))
+        .optional()?;
+    let defaults = match plan
+        .and_then(|plan| serde_json::from_str::<Value>(&plan).ok())
+        .and_then(|mut plan| plan.get_mut("profile_defaults").map(Value::take))
+    {
+        Some(defaults) => serde_json::from_value(defaults)?,
+        None => crate::domain::profiles::ProfileConfig::default(),
+    };
+    let (value, effective) =
+        crate::domain::profiles::resolve_observer(workspace, alias, overrides, &defaults)?;
+    let resolved: Observer = serde_json::from_value(value)?;
+    Ok(Selection {
+        record: json!({"form":"alias","alias":alias,"observer":resolved,"values":effective.values,"origins":effective.origins}),
+        observer: resolved,
+    })
 }
 
 fn review_work(run: &str, task: &str, attempt: &str, generation: u32, due_ms: u64) -> Work {
@@ -311,7 +357,7 @@ impl Service {
                 )?;
                 continue;
             }
-            let Some(observer) = policy.observer.clone() else {
+            if policy.observer.is_none() {
                 request_action(
                     &store.conn,
                     work,
@@ -319,16 +365,25 @@ impl Service {
                     "estimate due but execution observer is unconfigured",
                 )?;
                 continue;
-            };
-            if let Err(error) = validate_observer(workspace, &policy) {
-                request_action(
-                    &store.conn,
-                    work,
-                    "pause",
-                    &format!("observer selection rejected: {error}"),
-                )?;
-                continue;
             }
+            // An alias is resolved here, when the review is due, never at import.
+            let selection = resolve_observer(workspace, &store.conn, run, &policy).and_then(|s| {
+                validate_resolved(workspace, &policy, &s.observer)?;
+                Ok(s)
+            });
+            let selection = match selection {
+                Ok(selection) => selection,
+                Err(error) => {
+                    request_action(
+                        &store.conn,
+                        work,
+                        "pause",
+                        &format!("observer selection rejected: {error:#}"),
+                    )?;
+                    continue;
+                }
+            };
+            let observer = selection.observer;
             let id = uuid::Uuid::new_v4().to_string();
             let session = uuid::Uuid::new_v4().to_string();
             let mut evidence = evidence(workspace, &store.conn, work)?;
@@ -353,6 +408,10 @@ impl Service {
                 continue;
             }
             store.conn.execute("INSERT INTO reviewer_calls(id,run_id,task_id,attempt_id,generation,state,session,evidence,deadline_ms) VALUES(?1,?2,?3,?4,?5,'intent',?6,?7,?8)",params![id,work.run,work.task,work.attempt,work.generation,session,serde_json::to_string(&evidence)?,inherited.map(i64::try_from).transpose()?])?;
+            store.conn.execute(
+                "INSERT INTO reviewer_selections(review_id,selection) VALUES(?1,?2)",
+                params![id, selection.record.to_string()],
+            )?;
             let dir = workspace.data.join("reviews").join(&id);
             let launched = launch_snapshot(workspace, &dir);
             match launched {
@@ -470,7 +529,7 @@ impl Service {
                     continue;
                 }
                 let policy = policy(&store.conn, live.work.attempt.as_deref().unwrap())?;
-                let selected = validate_observer(workspace, &policy);
+                let selected = validate_resolved(workspace, &policy, &live.observer);
                 if let Err(error) = selected {
                     store.conn.execute(
                         "UPDATE reviewer_calls SET state='failed',detail=?2 WHERE id=?1",
@@ -630,18 +689,40 @@ fn policy(conn: &Connection, attempt: &str) -> Result<Policy> {
 
 /// Catalog reads never discover accounts or create/refresh metadata. The
 /// observer has its own selectors, installation scope and explicit exception.
+/// An alias resolves from the project's aliases without run defaults here.
 pub fn validate_observer(
     workspace: &Workspace,
     policy: &Policy,
+) -> Result<crate::executors::catalog::Validation> {
+    let observer = policy
+        .observer
+        .as_ref()
+        .context("execution observer is unconfigured")?;
+    let observer = match observer {
+        Observer::Profile { alias, overrides } => {
+            let (value, _) = crate::domain::profiles::resolve_observer(
+                workspace,
+                alias,
+                overrides,
+                &Default::default(),
+            )?;
+            serde_json::from_value(value)?
+        }
+        direct => direct.clone(),
+    };
+    validate_resolved(workspace, policy, &observer)
+}
+
+/// The capability exception applies to resolved alias values as to direct ones.
+pub fn validate_resolved(
+    workspace: &Workspace,
+    policy: &Policy,
+    observer: &Observer,
 ) -> Result<crate::executors::catalog::Validation> {
     ensure!(
         !policy.observer_catalog_scope.trim().is_empty(),
         "observer catalog scope must be nonempty"
     );
-    let observer = policy
-        .observer
-        .as_ref()
-        .context("execution observer is unconfigured")?;
     let (kind, mut values) = match observer {
         Observer::Codex { config } => {
             ensure!(
@@ -656,6 +737,9 @@ pub fn validate_observer(
                 "observer requires a fresh session without a native developer agent"
             );
             ("claude", serde_json::to_value(config)?)
+        }
+        Observer::Profile { alias, .. } => {
+            anyhow::bail!("execution observer alias {alias} must be resolved before validation")
         }
     };
     if let Some(effort) = values.get("reasoning_effort").cloned() {
@@ -781,7 +865,15 @@ pub fn finish_call(
             )?;
         }
     }
-    tx.execute("INSERT INTO journal(run_id,task_id,attempt_id,event,detail) VALUES(?1,?2,?3,'execution_review',?4)",params![work.run,work.task,work.attempt,json!({"review":id,"generation":work.generation,"actual_calls":count,"valid":valid.is_some(),"detail":detail}).to_string()])?;
+    let observer = tx
+        .query_row(
+            "SELECT selection FROM reviewer_selections WHERE review_id=?1",
+            [id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok());
+    tx.execute("INSERT INTO journal(run_id,task_id,attempt_id,event,detail) VALUES(?1,?2,?3,'execution_review',?4)",params![work.run,work.task,work.attempt,json!({"review":id,"generation":work.generation,"actual_calls":count,"valid":valid.is_some(),"detail":detail,"observer":observer}).to_string()])?;
     tx.commit()?;
     Ok(())
 }
@@ -1004,6 +1096,9 @@ fn launch(
                 "native tools disabled, strict empty MCP config and dontAsk; permission denial is not an OS sandbox",
             )
         }
+        Observer::Profile { alias, .. } => {
+            anyhow::bail!("execution observer alias {alias} was not resolved before launch")
+        }
     };
     // Remove all inherited scoped clients. Reviewer cannot impersonate a worker.
     for (key, _) in std::env::vars_os() {
@@ -1087,6 +1182,7 @@ fn response(dir: &Path, live: &Live, success: bool) -> Result<(Option<Assessment
                 false,
             )
         }
+        Observer::Profile { .. } => anyhow::bail!("review observer was not resolved"),
     };
     Ok((
         Some(serde_json::from_value(value)?),

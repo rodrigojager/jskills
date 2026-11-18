@@ -173,6 +173,7 @@ pub fn execute() -> Result<i32> {
         Action::Validate { plan } => {
             let plan = load_plan(&plan)?;
             let workspace = Workspace::resolve(&cli.root, cli.data_dir.as_deref())?;
+            crate::domain::reviews::check_observer_aliases(&workspace, &plan)?;
             let mut capabilities = Vec::new();
             for task in &plan.tasks {
                 let (_, snapshot) =

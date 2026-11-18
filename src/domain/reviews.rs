@@ -57,9 +57,57 @@ pub enum Observer {
         #[serde(flatten)]
         config: crate::executors::claude::ClaudeConfig,
     },
+    /// A jtasks alias, resolved from the project's aliases when a review is due.
+    Profile {
+        alias: String,
+        #[serde(default)]
+        overrides: crate::domain::profiles::ProfileConfig,
+    },
+}
+
+/// Executors the execution observer has a read-only protocol for.
+pub const OBSERVER_EXECUTORS: &[&str] = &["codex", "claude"];
+
+/// An observer alias that exists now and names an executor the observer does
+/// not support is refused at import; a missing alias is resolved at review time.
+pub fn check_observer_aliases(
+    workspace: &crate::storage::Workspace,
+    plan: &super::types::Plan,
+) -> Result<()> {
+    let mut aliases = None;
+    for task in &plan.tasks {
+        let Some(Observer::Profile { alias, overrides }) = &task.reviews.observer else {
+            continue;
+        };
+        let aliases = match &aliases {
+            Some(aliases) => aliases,
+            None => aliases.insert(super::profiles::aliases(workspace)?),
+        };
+        let Some((config, _)) = aliases.get(alias) else {
+            continue;
+        };
+        let executor = overrides
+            .executor
+            .as_ref()
+            .or(config.executor.as_ref())
+            .or(plan.profile_defaults.executor.as_ref());
+        if let Some(executor) = executor {
+            ensure!(
+                OBSERVER_EXECUTORS.contains(&executor.as_str()),
+                "task {}: execution observer alias {alias} resolves to executor {executor}, which the observer does not support (supported: {})",
+                task.id,
+                OBSERVER_EXECUTORS.join(", ")
+            );
+        }
+    }
+    Ok(())
 }
 
 pub fn validate(estimate: Option<u64>, policy: &Policy) -> Result<()> {
+    if let Some(Observer::Profile { alias, overrides }) = &policy.observer {
+        super::validation::identifier(alias)?;
+        super::profiles::validate(overrides)?;
+    }
     ensure!(
         estimate.is_none_or(|s| s > 0 && s <= (i64::MAX as u64) / 3000),
         "estimate_seconds must be positive and representable"

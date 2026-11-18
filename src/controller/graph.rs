@@ -177,6 +177,7 @@ pub fn propose(
     let old: Plan = serde_json::from_str(&old)?;
     let new = &request.plan;
     crate::domain::validation::validate(new)?;
+    crate::domain::reviews::check_observer_aliases(workspace, new)?;
     // Run defaults, original shared context and completion policy are not a
     // pending-task rewrite. In particular context.requirements stays immutable.
     let mut old_globals = serde_json::to_value(&old)?;

@@ -177,6 +177,7 @@ impl Store {
     pub fn import(&mut self, workspace: &Workspace, run: &str, plan: &Plan) -> Result<()> {
         validation::identifier(run)?;
         validation::validate(plan)?;
+        crate::domain::reviews::check_observer_aliases(workspace, plan)?;
         let tx = self.conn.transaction()?;
         tx.execute(
             "INSERT INTO runs(id,checkout,plan,state) VALUES(?1,?2,?3,'ready')",

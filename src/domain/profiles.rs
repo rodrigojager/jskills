@@ -270,46 +270,8 @@ pub fn resolve(
     };
     let mut snapshot = effective(workspace, alias, overrides, defaults)?;
     let config: ProfileConfig = serde_json::from_value(snapshot.values.clone())?;
-    ensure!(
-        matches!(
-            config.executor.as_deref(),
-            Some("codex" | "claude" | "opencode")
-        ),
-        "executor {} is configured; its native adapter is not available in this build",
-        config.executor.as_deref().unwrap()
-    );
-    let mut value = if config.executor.as_deref() == Some("opencode") {
-        ensure!(
-            config.effort.is_none() && config.native_profile.is_none(),
-            "OpenCode adapter does not support effort/native_profile; use variant/native_agent"
-        );
-        json!({"kind":"opencode","provider":config.provider,"model":config.model,"variant":config.variant,
-            "native_agent":config.native_agent,"permissions":config.autonomy.unwrap()})
-    } else if config.executor.as_deref() == Some("claude") {
-        ensure!(
-            config.variant.is_none() && config.native_profile.is_none(),
-            "Claude adapter does not support variant/native_profile; use native_agent for a native Claude agent"
-        );
-        json!({"kind":"claude","model":config.model,"provider":config.provider,"effort":config.effort,
-            "native_agent":config.native_agent,"permissions":config.autonomy.unwrap()})
-    } else {
-        ensure!(
-            config.variant.is_none() && config.native_agent.is_none(),
-            "Codex adapter does not support variant/native_agent; use native_profile for a native Codex profile"
-        );
-        json!({"kind":"codex", "model":config.model,"provider":config.provider,"reasoning_effort":config.effort,"native_profile":config.native_profile,"permissions":config.autonomy.unwrap()})
-    };
-    for (key, item) in [
-        ("executable", config.executable.map(Value::String)),
-        ("launcher_args", config.launcher_args.map(|v| json!(v))),
-        ("prompt", config.prompt.map(Value::String)),
-    ] {
-        if let Some(item) = item {
-            value[key] = item;
-        }
-    }
     let mut task = task.clone();
-    task.executor = serde_json::from_value(value)?;
+    task.executor = serde_json::from_value(executor_value(&config)?)?;
     let validation = crate::executors::catalog::annotate(workspace, &task, &snapshot.values)?;
     snapshot.executor_version = validation
         .catalog
@@ -322,6 +284,71 @@ pub fn resolve(
     snapshot.discovery = validation.state.clone();
     snapshot.catalog_validation = Some(validation);
     Ok((task, snapshot))
+}
+
+/// Resolve an execution observer alias now, from the project's current aliases.
+/// Returns the direct observer executor JSON and the effective values with origins.
+pub fn resolve_observer(
+    workspace: &Workspace,
+    alias: &str,
+    overrides: &ProfileConfig,
+    defaults: &ProfileConfig,
+) -> Result<(Value, EffectiveProfile)> {
+    let snapshot = effective(workspace, alias, overrides, defaults)?;
+    let config: ProfileConfig = serde_json::from_value(snapshot.values.clone())?;
+    let executor = config.executor.as_deref().unwrap_or_default();
+    ensure!(
+        crate::domain::reviews::OBSERVER_EXECUTORS.contains(&executor),
+        "execution observer alias {alias} resolves to executor {executor}, which the observer does not support (supported: {})",
+        crate::domain::reviews::OBSERVER_EXECUTORS.join(", ")
+    );
+    Ok((executor_value(&config)?, snapshot))
+}
+
+/// The native executor JSON that effective alias values launch.
+fn executor_value(config: &ProfileConfig) -> Result<Value> {
+    ensure!(
+        matches!(
+            config.executor.as_deref(),
+            Some("codex" | "claude" | "opencode")
+        ),
+        "executor {} is configured; its native adapter is not available in this build",
+        config.executor.as_deref().unwrap_or_default()
+    );
+    let mut value = if config.executor.as_deref() == Some("opencode") {
+        ensure!(
+            config.effort.is_none() && config.native_profile.is_none(),
+            "OpenCode adapter does not support effort/native_profile; use variant/native_agent"
+        );
+        json!({"kind":"opencode","provider":config.provider,"model":config.model,"variant":config.variant,
+            "native_agent":config.native_agent,"permissions":config.autonomy})
+    } else if config.executor.as_deref() == Some("claude") {
+        ensure!(
+            config.variant.is_none() && config.native_profile.is_none(),
+            "Claude adapter does not support variant/native_profile; use native_agent for a native Claude agent"
+        );
+        json!({"kind":"claude","model":config.model,"provider":config.provider,"effort":config.effort,
+            "native_agent":config.native_agent,"permissions":config.autonomy})
+    } else {
+        ensure!(
+            config.variant.is_none() && config.native_agent.is_none(),
+            "Codex adapter does not support variant/native_agent; use native_profile for a native Codex profile"
+        );
+        json!({"kind":"codex", "model":config.model,"provider":config.provider,"reasoning_effort":config.effort,"native_profile":config.native_profile,"permissions":config.autonomy})
+    };
+    for (key, item) in [
+        ("executable", config.executable.clone().map(Value::String)),
+        (
+            "launcher_args",
+            config.launcher_args.clone().map(|v| json!(v)),
+        ),
+        ("prompt", config.prompt.clone().map(Value::String)),
+    ] {
+        if let Some(item) = item {
+            value[key] = item;
+        }
+    }
+    Ok(value)
 }
 
 /// Serialize configuration updates independently of runtime/controller custody.
