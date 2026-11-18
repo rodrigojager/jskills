@@ -62,7 +62,7 @@ function duration(ms) {
   return h ? `${h}h ${m % 60}m` : m ? `${m}m ${s % 60}s` : `${s}s`;
 }
 function icon(value) {
-  const n = el('span', value === 'running' ? '' : ({completed:'✓',pending:'○',failed:'!',blocked:'!',superseded:'−'})[value] || '◌', `task-icon ${value || 'unknown'}`);
+  const n = el('span', value === 'running' ? '' : ({completed:'✓',pending:'○',failed:'✕',needs_intervention:'✕',blocked:'!',superseded:'−'})[value] || '◌', `task-icon ${value || 'unknown'}`);
   n.setAttribute('aria-label', statusName(value)); n.setAttribute('role','img'); return n;
 }
 async function allTasks(status, ticket) {
@@ -97,8 +97,11 @@ function progressPanel(tasks, data) {
   if (other) legend.append(el('span',`${other} other states`));
   const elapsed=el('div',undefined,'elapsed');
   const recorded=data.elapsed?.measurement==='recorded_span';
-  elapsed.append(el('span',recorded ? 'Recorded project span' : 'Total elapsed'),el('strong',duration(data.elapsed?.elapsed_ms)));
+  const total=el('strong',duration(data.elapsed?.elapsed_ms));
+  if(data.elapsed?.measurement==='wall_elapsed')live(total,data.elapsed.elapsed_ms);
+  elapsed.append(el('span',recorded ? 'Recorded project span' : 'Total elapsed'),total);
   elapsed.title=data.elapsed?.started_at ? `Since ${data.elapsed.started_at}. ${data.elapsed.start_source}. ${data.elapsed.end_source}.` : 'No execution start has been recorded';
+  const paused=el('span','','refresh-state'); paused.setAttribute('role','status'); paused.hidden=true; top.append(paused);
   const summary=el('div',undefined,'progress-summary'); summary.append(legend,elapsed);
   panel.append(top,line,summary); return panel;
 }
@@ -120,6 +123,7 @@ function taskRows(tasks) {
       row.dataset.task=task.id; row.setAttribute('aria-label',`${task.id}: ${task.deliverable} · ${statusName(task.state)}`);
       const copy=el('span',undefined,'task-copy'); copy.append(el('span',task.id,'task-id'),el('span',task.deliverable,'task-title'));
       const time=el('span',task.state==='pending' && !task.current_attempt ? '—' : duration(task.clock?.active_ms),'task-duration'); time.title='Recorded active execution time';
+      if(task.state==='running' && Number.isFinite(task.clock?.active_ms))live(time,task.clock.active_ms);
       const chevron=el('span','⌄','row-chevron'); chevron.setAttribute('aria-hidden','true');
       row.append(icon(task.state),copy,time,chevron);
       const content=el('div',undefined,'task-expansion'); item.append(row,content); list.append(item);
@@ -200,8 +204,20 @@ function projectTabs(tasks) {
 function renderDashboard(data,tasks) {
   const panel=el('section',undefined,'project-panel');panel.setAttribute('aria-label','Project tasks and progress');
   panel.append(projectHeading(data),progressPanel(tasks,data),projectTabs(tasks));
+  // An automatic refresh keeps the reader's place: list scroll, page scroll and the focused row.
+  const oldList=main.querySelector('.task-list'), listTop=oldList?.scrollTop || 0, pageTop=document.scrollingElement?.scrollTop || 0;
+  const focused=main.contains(document.activeElement) ? document.activeElement.closest('[data-task]')?.dataset.task : null;
   main.replaceChildren(panel);
+  const list=main.querySelector('.task-list'); if(list)list.scrollTop=listTop;
+  if(document.scrollingElement)document.scrollingElement.scrollTop=pageTop;
+  if(focused)main.querySelector(`[data-task="${CSS.escape(focused)}"]`)?.focus({preventScroll:true});
 }
+// A value read at a snapshot keeps counting between reads, so a live run never looks frozen.
+function live(node,ms){node.dataset.liveBase=String(ms);node.dataset.liveAt=String(Date.now());}
+setInterval(()=>{
+  if(document.hidden)return;
+  for(const node of document.querySelectorAll('[data-live-base]'))node.textContent=duration(Number(node.dataset.liveBase)+Date.now()-Number(node.dataset.liveAt));
+},1000);
 function section(title,content) { const n=el('section',undefined,'detail-section'); n.append(el('h3',title),content); return n; }
 function metric(label,value) { const n=el('div',undefined,'metric'); n.append(el('span',label),el('strong',value)); return n; }
 function brief(t) { return t.spec?.context?.brief || t.deliverable; }
@@ -294,8 +310,20 @@ async function load(moveFocus = true) {
 }
 window.addEventListener('hashchange', () => load());
 document.querySelector('#refresh').onclick = () => load(false);
-// Only overview refreshes automatically. No output polling or hidden-tab traffic.
-setInterval(() => { if (!busy && !document.hidden && !main.querySelector('.task-item[open], .project-tabs [aria-selected=true]:not(#tab-tasks)') && !main.contains(document.activeElement) && (!location.hash || location.hash === '#overview')) load(false); }, 5000);
+// Only overview refreshes automatically. No output polling or hidden-tab traffic. A pause is always said on screen.
+function pauseReason() {
+  if (main.querySelector('.task-item[open]')) return 'Auto-refresh paused while a task is open';
+  if (main.querySelector('.project-tabs [aria-selected=true]:not(#tab-tasks)')) return 'Auto-refresh paused on this tab';
+  if (document.activeElement?.matches?.('input')) return 'Auto-refresh paused while typing';
+  return '';
+}
+setInterval(() => {
+  if (document.hidden || (location.hash && location.hash !== '#overview')) return;
+  const reason = pauseReason(), note = main.querySelector('.refresh-state');
+  if (note) { note.textContent = reason; note.hidden = !reason; }
+  if (!busy && !reason) load(false);
+}, 5000);
+document.addEventListener('toggle', () => { const note = main.querySelector('.refresh-state'), reason = pauseReason(); if (note) { note.textContent = reason; note.hidden = !reason; } }, true);
 async function start() {
   try {
     const response = await fetch('/presentation.json', {signal: AbortSignal.timeout(4000), cache:'no-store'});

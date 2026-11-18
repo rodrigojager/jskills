@@ -1,6 +1,14 @@
 'use strict';
 // The only Orca-specific renderer code. The generated shared/ files are canonical web assets.
 (() => {
+  // State colors follow the live Orca theme: a light background selects the darker green and orange.
+  function syncTone() {
+    const rgb=(getComputedStyle(document.body).backgroundColor.match(/\d+(\.\d+)?/g) || []).slice(0,3).map(Number);
+    if(rgb.length!==3)return;
+    const tone=(0.2126*rgb[0]+0.7152*rgb[1]+0.0722*rgb[2])/255>0.5 ? 'light' : 'dark';
+    if(document.documentElement.dataset.tone!==tone)document.documentElement.dataset.tone=tone;
+  }
+  document.addEventListener('DOMContentLoaded',syncTone);setInterval(syncTone,2000);
   let api, context=null, revision=0;
   const main=document.querySelector('main'), run=document.querySelector('#run');
   let updateOffer=null,updateBusy=false;

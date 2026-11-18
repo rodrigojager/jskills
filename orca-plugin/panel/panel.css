@@ -1,4 +1,16 @@
-:root{color-scheme:light dark;--bg:var(--orca-background);--surface:var(--orca-card);--raised:var(--orca-secondary);--line:var(--orca-border);--text:var(--orca-foreground);--muted:var(--orca-muted-foreground);--dim:var(--orca-muted-foreground);--mint:var(--orca-primary);--amber:var(--orca-primary);--red:var(--orca-destructive);font-family:var(--orca-font-sans,system-ui,sans-serif)}
+/* Orca exposes no success or in-progress token, so those two state colors are fixed per tone, as Orca's own
+   sidebar shows them (a green check, an orange spinner); failure uses Orca's destructive token. bridge.js sets
+   data-tone from the live background. Accents (tabs, progress, focus) keep the theme's primary. */
+:root{color-scheme:light dark;--bg:var(--orca-background);--surface:var(--orca-card);--raised:var(--orca-secondary);--line:var(--orca-border);--text:var(--orca-foreground);--muted:var(--orca-muted-foreground);--dim:var(--orca-muted-foreground);--mint:var(--orca-primary);--amber:var(--busy);--red:var(--orca-destructive);--ok:#3fb950;--busy:#f0883e;--busy-track:#f0883e40;font-family:var(--orca-font-sans,system-ui,sans-serif)}
+:root[data-tone=light]{--ok:#1a7f37;--busy:#bc4c00;--busy-track:#bc4c0033}
+.task-icon.completed,.state.completed{color:var(--ok)}
+.legend-dot{background:var(--ok)}
+.legend-dot.running{background:var(--busy)}
+.status-note{color:var(--busy)}
+.task-icon.running{border-color:var(--busy-track);border-top-color:var(--busy);border-right-color:var(--busy)}
+.task-row.is-running .task-title{color:var(--busy);font-weight:600}
+.state.running{color:var(--busy)}
+.task-icon.failed,.task-icon.needs_intervention,.task-icon.blocked,.state.failed,.state.needs_intervention,.state.blocked{color:var(--red)}
 body{background:var(--bg);color:var(--text)}
 .app-header{height:58px;padding:0 16px;max-width:none}
 .brand-mark{color:var(--orca-primary-foreground)}
@@ -13,9 +25,7 @@ input,select{background:var(--orca-input);color:var(--text)}
 progress,progress::-webkit-progress-bar{background:var(--orca-muted)}
 .progress-count,.task-list,.task-item{border-color:var(--line)}
 .task-item[open]{background:var(--orca-muted)}
-.task-row.is-running .task-title{color:var(--text);font-weight:600}
 .task-icon.pending,.row-chevron,.brand-divider{color:var(--muted)}
-.task-icon.running{border-color:var(--line);border-top-color:var(--mint);border-right-color:var(--mint)}
 .count-pill{background:var(--orca-secondary);color:var(--orca-secondary-foreground)}
 .state.completed,.state.running{background:var(--orca-muted);border-color:var(--line)}
 .event-entry,.attempt-entry,.dependency,.detail-section,.card,pre{background:transparent;border-color:var(--line)}
