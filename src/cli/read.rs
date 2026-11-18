@@ -16,6 +16,9 @@ pub struct Page {
     pub limit: usize,
     #[arg(long)]
     pub revision: Option<u32>,
+    /// Runs view: include runs whose checkout folder no longer exists.
+    #[arg(long)]
+    pub all: bool,
 }
 #[derive(Args)]
 pub struct Read {
@@ -56,6 +59,7 @@ impl Page {
         request.after = self.after;
         request.limit = self.limit;
         request.revision = self.revision;
+        request.all = self.all;
         request
     }
 }

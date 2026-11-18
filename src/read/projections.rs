@@ -41,6 +41,9 @@ pub struct Request {
     pub stream: String,
     /// Entity-list cursors are scoped to this graph revision when supplied.
     pub revision: Option<u32>,
+    /// Runs view only: include runs whose checkout folder no longer exists.
+    #[serde(default)]
+    pub all: bool,
 }
 impl Request {
     pub fn new(view: View, run: Option<&str>) -> Self {
@@ -54,6 +57,7 @@ impl Request {
             limit: MAX_ITEMS,
             stream: "stdout".into(),
             revision: None,
+            all: false,
         }
     }
 }
@@ -142,6 +146,102 @@ fn selected_run(conn: &Connection, request: &Request) -> Result<String> {
         "explicit run selector required: no run or ambiguous runs"
     );
     Ok(ids[0].clone())
+}
+/// The most recent run (by its first journal event) whose checkout is this
+/// folder and still exists on disk.
+pub fn current_run(conn: &Connection, workspace: &Workspace) -> Result<Option<String>> {
+    let mut query = conn.prepare(
+        "SELECT r.id,r.checkout FROM runs r
+         ORDER BY COALESCE((SELECT min(sequence) FROM journal WHERE run_id=r.id),0) DESC, r.id DESC",
+    )?;
+    let rows = query
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows
+        .into_iter()
+        .find(|(_, checkout)| {
+            let path = std::path::Path::new(checkout);
+            path == workspace.checkout && path.exists()
+        })
+        .map(|(id, _)| id))
+}
+
+/// Resolve `--run`, or the current run of this folder when it is omitted.
+pub fn resolve_current(workspace: &Workspace, run: Option<String>) -> Result<String> {
+    if let Some(run) = run {
+        return Ok(run);
+    }
+    let conn = open(workspace)?;
+    current_run(&conn, workspace)?.context("no current run for this folder; pass --run")
+}
+
+fn controller_live(workspace: &Workspace, run: &str) -> bool {
+    let Ok(bytes) = std::fs::read(workspace.data.join("control.json")) else {
+        return false;
+    };
+    let Ok(endpoint) = serde_json::from_slice::<crate::transport::ControlEndpoint>(&bytes) else {
+        return false;
+    };
+    endpoint.run == run
+        && endpoint.endpoint.ip().is_loopback()
+        && std::net::TcpStream::connect_timeout(
+            &endpoint.endpoint,
+            std::time::Duration::from_millis(300),
+        )
+        .is_ok()
+}
+
+fn runs_list(
+    conn: &Connection,
+    workspace: &Workspace,
+    current: &Option<String>,
+    all: bool,
+) -> Result<Vec<Value>> {
+    let mut query = conn.prepare(
+        "SELECT id,checkout,state,
+           (SELECT recorded_at FROM journal WHERE run_id=runs.id AND event='launch_intent' ORDER BY sequence LIMIT 1),
+           (SELECT recorded_at FROM journal WHERE run_id=runs.id ORDER BY sequence DESC LIMIT 1)
+         FROM runs ORDER BY id",
+    )?;
+    let rows = query
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut out = Vec::new();
+    for (id, checkout, state, started_at, last_event_at) in rows {
+        let exists = std::path::Path::new(&checkout).exists();
+        if !exists && !all {
+            continue;
+        }
+        let (mut completed, mut running, mut pending, mut failed, mut other) = (0u64, 0, 0, 0, 0);
+        let mut counts = conn.prepare("SELECT state,count(*) FROM tasks WHERE run_id=?1 GROUP BY state")?;
+        for row in counts.query_map([&id], |r| Ok((r.get::<_, String>(0)?, nonnegative(r, 1)?)))? {
+            let (task_state, n) = row?;
+            match task_state.as_str() {
+                "completed" => completed += n,
+                "running" => running += n,
+                "pending" => pending += n,
+                "failed" => failed += n,
+                _ => other += n,
+            }
+        }
+        let live = controller_live(workspace, &id);
+        out.push(json!({
+            "run":id,"checkout":checkout,"state":state,"checkout_exists":exists,
+            "started_at":started_at,"last_event_at":last_event_at,
+            "counts":{"completed":completed,"running":running,"pending":pending,"failed":failed,"other":other},
+            "controller":if live {"live"} else {"stopped"},
+            "current":current.as_deref()==Some(id.as_str()),
+        }));
+    }
+    Ok(out)
 }
 fn revision(conn: &Connection, run: &str) -> Result<Option<u32>> {
     if !table(conn, "graph_baselines")? {
@@ -266,10 +366,13 @@ pub fn read(workspace: &Workspace, request: &Request) -> Result<Value> {
     );
     let conn = open(workspace)?;
     if matches!(request.view, View::Runs) {
-        let total = conn.query_row("SELECT count(*) FROM runs", [], |r| nonnegative(r, 0))?;
-        let mut query =
-            conn.prepare("SELECT id,checkout,state FROM runs ORDER BY id LIMIT ?1 OFFSET ?2")?;
-        let runs=query.query_map(params![sql_limit(request.limit)?,sql_cursor(request.after)?],|r|Ok(json!({"run":r.get::<_,String>(0)?,"checkout":r.get::<_,String>(1)?,"state":r.get::<_,String>(2)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let current = current_run(&conn, workspace)?;
+        let mut rows = runs_list(&conn, workspace, &current, request.all)?;
+        let total = rows.len() as u64;
+        let after = request.after.min(total) as usize;
+        rows.drain(..after);
+        rows.truncate(request.limit);
+        let runs = rows;
         return Ok(attach(
             json!({"runs":runs,"page":pagination(request.after,runs.len(),request.limit,total,None)}),
             metadata(&conn, workspace, None)?,

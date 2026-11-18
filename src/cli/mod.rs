@@ -114,8 +114,9 @@ pub enum Action {
     },
     /// Own the controller in this foreground process until completion/intervention.
     Run {
+        /// Defaults to the current run of this folder.
         #[arg(long)]
-        run: String,
+        run: Option<String>,
         /// Persist restricted permissions for every worker invocation in this run.
         #[arg(long)]
         restricted: bool,
@@ -259,6 +260,7 @@ pub fn execute() -> Result<i32> {
                     Ok(0)
                 }
                 Action::Run { run, restricted } => {
+                    let run = crate::read::projections::resolve_current(&workspace, run)?;
                     controller::dispatch::run_with_panel(&workspace, &run, restricted, !cli.json)
                 }
                 Action::Status { run } => {
