@@ -2,6 +2,7 @@ pub mod activity;
 pub mod catalog;
 pub mod checkpoint;
 pub mod clean;
+pub mod configure;
 pub mod decisions;
 pub mod doctor;
 pub mod exec;
@@ -94,6 +95,8 @@ pub enum Action {
     Catalog(catalog::Catalog),
     /// Read diagnostics without repairs, refresh, credentials or provider calls.
     Doctor,
+    /// List or change the agent aliases a run uses, or open the menu.
+    Configure(configure::Configure),
     /// Manage jtasks profile aliases separately from native agent settings.
     Profiles(profiles::Profiles),
     /// Coordinate advisory files/named resources independently of process custody.
@@ -130,6 +133,9 @@ pub enum Action {
     Stop {
         #[arg(long)]
         run: String,
+        /// Who asked for the stop, recorded in the journal.
+        #[arg(long)]
+        actor: Option<String>,
     },
     /// Submit a designated outcome through an attempt-scoped control client.
     Result {
@@ -245,6 +251,7 @@ pub fn execute() -> Result<i32> {
                 }
                 Action::Catalog(args) => catalog::execute(&workspace, args),
                 Action::Doctor => doctor::execute(&workspace),
+                Action::Configure(args) => configure::execute(&workspace, args),
                 Action::Profiles(profiles) => profiles::execute(&workspace, profiles),
                 Action::Resources(resources) => resources::execute(&workspace, resources),
                 Action::Exec(exec) => exec::execute(&workspace, exec),
@@ -267,19 +274,28 @@ pub fn execute() -> Result<i32> {
                 Action::Status { run } => {
                     read::print(&workspace, &ReadRequest::new(View::Status, Some(&run)))
                 }
-                Action::Stop { run } => {
-                    let endpoint: ControlEndpoint = serde_json::from_slice(
-                        &fs::read(workspace.data.join("control.json"))
-                            .context("no controller endpoint; run must be active")?,
-                    )?;
-                    ensure!(endpoint.run == run, "controller serves another run");
-                    let response = transport::send(
+                Action::Stop { run, actor } => {
+                    let already = || {
+                        println!("the run is already stopped");
+                        Ok(3)
+                    };
+                    let Ok(bytes) = fs::read(workspace.data.join("control.json")) else {
+                        return already();
+                    };
+                    let endpoint: ControlEndpoint = serde_json::from_slice(&bytes)?;
+                    if endpoint.run != run {
+                        return already();
+                    }
+                    let Ok(response) = transport::send(
                         endpoint.endpoint,
                         &Request::Stop {
                             token: endpoint.token,
                             run,
+                            actor,
                         },
-                    )?;
+                    ) else {
+                        return already();
+                    };
                     println!("{}", serde_json::to_string(&response)?);
                     Ok(0)
                 }
