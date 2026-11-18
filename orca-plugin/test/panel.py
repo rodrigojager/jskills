@@ -32,7 +32,8 @@ try:
         }};""")
         page.goto(base)
         page.evaluate("""document.documentElement.style.cssText='--orca-background:#111315;--orca-foreground:#eceff3;--orca-card:#191c20;--orca-secondary:#252a30;--orca-secondary-foreground:#dce2e9;--orca-muted:#252a30;--orca-muted-foreground:#a4aeb9;--orca-primary:#a4e6c9;--orca-primary-foreground:#10251e;--orca-accent:#2d343b;--orca-accent-foreground:#ffffff;--orca-destructive:#ffa5a5;--orca-border:#353c44;--orca-input:#15181c;--orca-radius:10px;--orca-font-sans:Segoe UI;--orca-font-mono:Consolas'""")
-        expect(page.locator('main')).to_contain_text('Select a project run',timeout=15000)
+        # A project with a current run opens it directly; the selector is still how the test picks another run.
+        expect(page.locator('#run')).to_be_visible(timeout=15000)
         page.locator('#run').select_option('Alpha-primary')
         expect(page.locator('.task-row')).to_have_count(205,timeout=15000)
         expect(page.locator('.progress-percent')).to_have_text('100%')
