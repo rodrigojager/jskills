@@ -138,3 +138,46 @@ test('actual bundled native CLI provisions offline and preserves missing-databas
   const workspace=path.join(root,'checkout');await mkdir(workspace);assert.equal((await execute('git',['init','--quiet',workspace])).code,0);
   await assert.rejects(readProjection(runtime.executable,{root:workspace,dataDir:path.join(root,'empty'),run:'one'},'status',{}),e=>e.code==='no_data');
 });
+
+test('run controls use the real CLI: stop ends a live controller, continue opens or focuses an Orca terminal, a live controller refuses',{skip:!process.env.JTASKS_PLUGIN_TEST_EXE},async()=>{
+  const {spawn}=await import('node:child_process');
+  const executable=process.env.JTASKS_PLUGIN_TEST_EXE,root=await fixture();
+  assert.equal((await execute('git',['init','--quiet',root])).code,0);
+  const plan=path.join(root,'plan.json');
+  await writeFile(plan,JSON.stringify({schema_version:1,completion:'judgment',operation_placement:'none',tasks:[{id:'A',title:'Fixture A',depends_on:[],executor:{kind:'fixture',outcome:'completed',summary:'done',delay_ms:8000}}]}));
+  const dataDir=path.join(root,'runtime'),cli=(...args)=>execute(executable,['--lang','en','--root',root,'--data-dir',dataDir,...args]);
+  const imported=await cli('import',plan,'--run','demo');assert.equal(imported.code,0,imported.stderr);
+  const h=host();h.orca.host.call=(base=>async(name,input)=>name==='workspace.list'?{workspaces:[{id:'a',name:'Alpha',path:root,hostId:'local'}]}:base(name,input))(h.orca.host.call);
+  const created=[],focused=[];let open=[];
+  const terminals={list:async()=>open,focus:async handle=>{focused.push(handle);},create:async spec=>{created.push(spec);open=[{handle:'term_1',title:spec.title}];}};
+  const service=createService(h.orca,{runtime:{ensure:async()=>({executable,version})},terminals,dataDir});
+  const title='jtasks · demo';
+  const controller=spawn(executable,['--root',root,'--data-dir',dataDir,'run','--run','demo'],{stdio:'ignore',windowsHide:true});
+  const exited=new Promise(resolve=>controller.once('exit',resolve));
+  try{
+    for(let i=0;;i++){const out=JSON.parse((await cli('read','runs')).stdout);if(out.runs?.[0]?.controller==='live')break;assert.ok(i<300,'controller never became live');await new Promise(r=>setTimeout(r,50));}
+    const refused=await service.continueRun({run:'demo'});
+    assert.equal(refused.state,'refused');assert.match(refused.message,/another foreground controller/);assert.equal(created.length,0);
+    assert.equal((await service.stopRun({run:'demo'})).state,'stopping');
+    await exited;
+    assert.equal((await service.stopRun({run:'demo'})).state,'already_stopped');
+    const opened=await service.continueRun({run:'demo'});
+    assert.equal(opened.state,'opened');assert.equal(created.length,1);assert.equal(created[0].title,title);assert.equal(created[0].root,await import('node:fs/promises').then(fs=>fs.realpath(root)));
+    assert.equal(created[0].command.replaceAll('"',''),`${executable} --root ${created[0].root} run --run demo`);
+    const again=await service.continueRun({run:'demo'});
+    assert.equal(again.state,'focused');assert.deepEqual(focused,['term_1']);assert.equal(created.length,1);
+    await assert.rejects(service.continueRun({run:'missing'}),e=>e.code==='invalid_params');
+    await assert.rejects(service.stopRun({run:'demo',extra:1}),e=>e.code==='invalid_params');
+    assert.equal((await service.agentsList({})).run,'demo');
+    await assert.rejects(service.agentsSet({alias:'ghost',effort:'bogus'}),/./);
+  }finally{controller.kill();service.dispose();}
+});
+test('orcaTerminals asks Orca for a titled terminal in the workspace and focuses by handle',async()=>{
+  const {orcaTerminals}=await import('../src/worker.mjs'),calls=[];
+  const run=async args=>{calls.push(args);return {state:'applied',output:JSON.stringify({result:{terminals:[{handle:'h',title:'t'}]}})};};
+  const t=orcaTerminals(run);
+  assert.deepEqual(await t.list('/w'),[{handle:'h',title:'t'}]);
+  await t.create({root:'/w',title:'jtasks · demo',command:'jtasks run'});await t.focus('h');
+  assert.deepEqual(calls[1],['terminal','create','--worktree','path:/w','--title','jtasks · demo','--command','jtasks run','--focus']);
+  assert.deepEqual(calls[2],['terminal','switch','--terminal','h']);
+});

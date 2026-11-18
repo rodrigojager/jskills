@@ -9,7 +9,7 @@ import {updateManager} from './updates.mjs';
 const conflict = () => Object.assign(new Error('The active project changed. Refresh the panel.'),{code:'conflict'});
 const local = workspace => workspace && (!workspace.hostId || workspace.hostId === 'local');
 
-export function createService(orca, {runtime = runtimeManager(), read = readProjection, listRuns = runs, canonical = realpath, open = openPanel, updates = updateManager({host:orcaCommand})} = {}) {
+export function createService(orca, {runtime = runtimeManager(), read = readProjection, listRuns = runs, canonical = realpath, open = openPanel, updates = updateManager({host:orcaCommand}), exec = execute, terminals = orcaTerminals(), dataDir} = {}) {
   let epoch=0, resolution=0, observedWorkspace, active=null, controller=new AbortController(), ready=null, settings={}, pending=null;
   let selectionWrites=Promise.resolve();
   const disposables=[];
@@ -81,7 +81,8 @@ export function createService(orca, {runtime = runtimeManager(), read = readProj
       const saved=input.run || await orca.storage.get(storageKey);
       if(input.run && !collection.runs.some(r=>r.run===input.run))throw new Error('The selected run is not in this project');
       // No arbitrary choice when several runs have never been selected.
-      const run=collection.runs.some(r=>r.run===saved) ? saved : collection.runs.length===1 ? collection.runs[0].run : null;
+      const live=collection.runs.find(r=>r.current===true)?.run;
+      const run=collection.runs.some(r=>r.run===saved) ? saved : live || (collection.runs.length===1 ? collection.runs[0].run : null);
       await current(base);
       if(request!==resolution)throw conflict();
       if(!run){active=null;return {state:collection.runs.length?'select_run':'no_runs',workspace:workspace.name,runs:collection.runs,message:collection.runs.length?'Select a project run.':'No jtasks run has been imported in this project.',cli};}
@@ -122,7 +123,58 @@ export function createService(orca, {runtime = runtimeManager(), read = readProj
     }
     return data;
   }
-  disposables.push(orca.panels.handle('context',context),orca.panels.handle('read',projection),orca.panels.handle('updates.check',checkUpdates),orca.panels.handle('updates.apply',applyUpdate));
+
+  const invalid=message=>Object.assign(new Error(message),{code:'invalid_params'});
+  const text=(value,name,max=512)=>{if(typeof value!=='string' || !value || value.length>max || value.includes('\0'))throw invalid(`Invalid ${name}`);return value;};
+  const exact=(input,allowed)=>{if(!input || typeof input!=='object' || Array.isArray(input) || Object.keys(input).some(key=>!allowed.includes(key)))throw invalid('Invalid request');return input;};
+  // The active local workspace and the CLI, resolved fresh for every control request.
+  async function target() {
+    const workspace=await focused();
+    if(!workspace)throw Object.assign(new Error('Open a local project in Orca first.'),{code:'no_context'});
+    if(!local(workspace))throw Object.assign(new Error('Remote and WSL workspaces are not supported.'),{code:'unsupported_remote'});
+    return {root:await canonical(workspace.path),cli:await ensure(),dataDir};
+  }
+  async function cliJson(t,args,{accept=[0]}={}) {
+    const result=await exec(t.cli.executable,['--lang','en','--root',t.root,...(t.dataDir?['--data-dir',t.dataDir]:[]),...args],{timeout:30000});
+    if(!accept.includes(result.code))throw new Error((result.stderr || result.stdout || `jtasks failed (${result.code})`).trim().slice(0,1000));
+    return result;
+  }
+  const parse=raw=>{try{return JSON.parse(raw);}catch{throw new Error('Native CLI returned invalid JSON');}};
+  async function known(t,run) {
+    const all=(await listRuns(t.cli.executable,{root:t.root,dataDir:t.dataDir},{signal:controller.signal})).runs;
+    if(!all.some(r=>r.run===run))throw invalid('The run is not in this project');
+    return all;
+  }
+  async function stopRun(input) {
+    exact(input,['run']);const run=text(input.run,'run'),t=await target();await known(t,run);
+    const result=await cliJson(t,['stop','--run',run,'--actor','orca-panel'],{accept:[0,3]});
+    if(result.code===3)return {state:'already_stopped',message:'The run is already stopped.'};
+    return {state:'stopping',message:'Stop requested. The controller ends the run at the next safe point.'};
+  }
+  const quote=value=>/^[A-Za-z0-9_.\/:\\@+=-]+$/.test(value)?value:`"${value.replace(/"/g,'\\"')}"`;
+  const continueCommand=(t,run)=>[quote(t.cli.executable),'--root',quote(t.root),'run','--run',quote(run)].join(' ');
+  async function continueRun(input) {
+    exact(input,['run']);const run=text(input.run,'run'),t=await target(),all=await known(t,run);
+    // One foreground controller owns a checkout (ADR-0001): refuse with the CLI's own reason.
+    if(all.some(r=>r.controller==='live'))return {state:'refused',message:'another foreground controller owns this checkout'};
+    const title=`jtasks · ${run}`,command=continueCommand(t,run);
+    const open=(await terminals.list(t.root)).find(terminal=>terminal.title===title);
+    if(open){await terminals.focus(open.handle);return {state:'focused',title,message:'The run terminal is already open; it is now in front.'};}
+    await terminals.create({root:t.root,title,command});
+    return {state:'opened',title,command,message:`The run continues in the terminal ${title}.`};
+  }
+  const runFlag=run=>run===undefined?[]:['--run',text(run,'run')];
+  async function agents(input,build) {
+    const t=await target();return parse((await cliJson(t,build(input))).stdout);
+  }
+  const agentsList=input=>agents(exact(input ?? {},['run']),i=>['configure',...runFlag(i.run),'--list','--json']);
+  const agentsChoices=input=>agents(exact(input,['executor']),i=>['configure','--choices',text(i.executor,'executor',64),'--json']);
+  const agentsSet=input=>agents(exact(input,['alias','executor','provider','model','effort','run']),i=>{
+    const args=['configure',...runFlag(i.run),'--set',text(i.alias,'alias',128)];
+    for(const key of ['executor','provider','model','effort'])if(i[key]!==undefined)args.push(`--${key}`,text(i[key],key,256));
+    return [...args,'--actor','orca-panel','--json'];
+  });
+  disposables.push(orca.panels.handle('run.stop',stopRun),orca.panels.handle('run.continue',continueRun),orca.panels.handle('agents.list',agentsList),orca.panels.handle('agents.choices',agentsChoices),orca.panels.handle('agents.set',agentsSet),orca.panels.handle('context',context),orca.panels.handle('read',projection),orca.panels.handle('updates.check',checkUpdates),orca.panels.handle('updates.apply',applyUpdate));
   disposables.push(orca.events.on('workspace.changed',payload=>{
     const id=payload?.context?.workspaceId || null;
     if(id===observedWorkspace)return;observedWorkspace=id;invalidate();
@@ -141,7 +193,7 @@ export function createService(orca, {runtime = runtimeManager(), read = readProj
     }catch{return next(event);}
   }));
   ensure().catch(error=>orca.log(`CLI preparation: ${error.message}`));
-  return {context,projection,invalidate,dispose(){controller.abort();for(const d of disposables)d.dispose();}};
+  return {context,projection,stopRun,continueRun,agentsList,agentsChoices,agentsSet,invalidate,dispose(){controller.abort();for(const d of disposables)d.dispose();}};
 }
 
 async function openPanel() {
@@ -161,6 +213,16 @@ export async function orcaCommand(args) {
     return {state:'applied',message:'Orca applied the request. The panel may reload.',output:result.stdout};
   }
   throw new Error('Orca CLI not found. Open jtasks using its sidebar icon.');
+}
+
+// Continue runs in a terminal Orca owns (not the plugin's): it is shown, and it survives a plugin reinstall.
+export function orcaTerminals(run=orcaCommand) {
+  const json=async args=>{const result=await run([...args,'--json']);if(result.state!=='applied')throw new Error(result.message);return JSON.parse(result.output);};
+  return {
+    async list(root){const data=await json(['terminal','list','--worktree',`path:${root}`]);return data?.result?.terminals ?? [];},
+    async focus(handle){await run(['terminal','switch','--terminal',handle]);},
+    async create({root,title,command}){await run(['terminal','create','--worktree',`path:${root}`,'--title',title,'--command',command,'--focus']);}
+  };
 }
 
 let service;

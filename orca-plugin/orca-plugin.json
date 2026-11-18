@@ -8,7 +8,7 @@
   "license": "MIT",
   "engines": {"orca": ">=1.4.261"},
   "main": "src/worker.mjs",
-  "capabilities": [{"kind":"workspace:read"},{"kind":"storage:own"},{"kind":"settings:own"},{"kind":"agent:launch"}],
+  "capabilities": [{"kind":"workspace:read"},{"kind":"storage:own"},{"kind":"settings:own"},{"kind":"agent:launch"},{"kind":"terminal:send"}],
   "contributes": {
     "panels": [{"id":"tasks","title":"jtasks","icon":"check","entry":"panel/index.html","ui":"html"}],
     "commands": [{"id":"jtasks.open","title":"jtasks: Open project tasks","when":"workspace"}],
