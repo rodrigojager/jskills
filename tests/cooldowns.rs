@@ -264,7 +264,7 @@ fn manual_exhausted_grant_is_one_durable_idempotent_attempt() {
 fn retry_cannot_duplicate_live_work_or_bypass_dependencies() {
     let f = Fixture::new();
     let mut a = task("A", &[], "completed", "done");
-    a["executor"]["delay_ms"] = json!(700);
+    a["executor"]["delay_ms"] = json!(2500);
     f.import(json!([a, task("B", &["A"], "completed", "dependent")]));
     let mut child = f
         .command()
