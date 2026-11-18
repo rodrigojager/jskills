@@ -228,6 +228,9 @@ fn predicate(conn: &Connection, name: &str) -> Result<String> {
     if columns.iter().any(|c| c == "attempt_id") {
         return Ok("attempt_id IN (SELECT id FROM attempts WHERE run_id=?1)".into());
     }
+    if name == "reviewer_selections" {
+        return Ok("review_id IN (SELECT id FROM reviewer_calls WHERE run_id=?1)".into());
+    }
     bail!("unknown runtime table ownership: {name}; explicit management reconciliation required")
 }
 

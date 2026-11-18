@@ -527,13 +527,27 @@ fn native_and_explicit_logs_are_committed_live_before_retirement() {
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(10));
     }
-    let output = f.call(&["activity", "--run", "demo", "--task", "A"]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    // Native output is read on a 250 ms cadence, so the clocks may trail the ready file.
+    let polled = Instant::now() + Duration::from_secs(10);
+    let value: Value = loop {
+        let output = f.call(&["activity", "--run", "demo", "--task", "A"]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let a = &value["attempts"][0];
+        if (a["last_log_ms"].is_number()
+            && a["last_activity_ms"].is_number()
+            && a["last_distinct_content_ms"].is_number()
+            && a["last_tool_activity_ms"].is_number())
+            || Instant::now() > polled
+        {
+            break value;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
     let a = &value["attempts"][0];
     assert!(a["last_log_ms"].is_number());
     assert!(a["last_activity_ms"].is_number());
