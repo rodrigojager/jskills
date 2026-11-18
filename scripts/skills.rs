@@ -6,11 +6,11 @@ use std::{
 };
 
 pub const AGENTS: &[&str] = &["codex", "claude", "opencode"];
-pub const SKILLS: &[&str] = &["to-jtasks", "jtasks", "estimator"];
+pub const SKILLS: &[&str] = &["to-jtasks", "jtasks", "estimate-jtasks"];
 
 fn harness(agent: &str, skill: &str) -> &'static str {
     match (agent, skill) {
-        (_, "estimator") => {
+        (_, "estimate-jtasks") => {
             "This is a separately invoked estimation workflow. Use the selected harness's documented fresh noninteractive invocation and explicit model/configuration; never resume a planner or task session. The optional Python helper is not part of the standalone Rust CLI runtime."
         }
         ("codex", "jtasks") => {

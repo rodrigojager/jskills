@@ -1,5 +1,5 @@
 ---
-name: estimator
+name: estimate-jtasks
 description: Estimate missing active task durations after jtasks plan slicing, in a fresh configured agent session. Preserve explicit estimates and all other plan intent; do not execute the plan or benchmark operations.
 ---
 
@@ -37,4 +37,4 @@ The helper writes the candidate only to the explicitly supplied scratch path, ca
 
 {{HARNESS_GUIDANCE}}
 
-Canonical source is `skills/source/estimator`; `scripts/skills.rs` builds and checks local Codex, Claude Code and OpenCode packages. Local packaging never installs or changes global skills.
+Canonical source is `skills/source/estimate-jtasks`; `scripts/skills.rs` builds and checks local Codex, Claude Code and OpenCode packages. Local packaging never installs or changes global skills.

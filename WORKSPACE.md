@@ -77,10 +77,10 @@ parallel capacities and other completion policies arrive in later increments.
 - `skills/opencode/to-jtasks/references/authoring.md`
 - `skills/opencode/jtasks/SKILL.md`
 - `skills/opencode/jtasks/references/execution.md`
-- `skills/source/estimator/SKILL.md`
-- `skills/codex/estimator/SKILL.md`
-- `skills/claude/estimator/SKILL.md`
-- `skills/opencode/estimator/SKILL.md`
+- `skills/source/estimate-jtasks/SKILL.md`
+- `skills/codex/estimate-jtasks/SKILL.md`
+- `skills/claude/estimate-jtasks/SKILL.md`
+- `skills/opencode/estimate-jtasks/SKILL.md`
 
 The listed skill Markdown is shipped product input. Edit canonical `skills/source/`
 only, then compile `scripts/skills.rs` with `rustc --edition 2024` to a workspace
@@ -88,10 +88,18 @@ build directory and invoke it as `skills build <product-root>` or
 `skills check <product-root>`. The generator does not install skills or delete
 unexpected files. Global installation requires separate authorization.
 
-The estimator's optional `scripts/estimate.py` requires Python 3.10+ and a
+The `estimate-jtasks` skill's optional `scripts/estimate.py` requires Python 3.10+ and a
 separately configured harness. These are skill workflow dependencies, not Rust
 CLI runtime prerequisites. It uses a fresh session and public validation to fill
 only missing active-duration estimates; it never imports or starts a run.
+
+The authoring skill's optional `scripts/compose.py` (Python 3.10+, standard
+library only) writes version-1 intent from a short spec and a plan written by
+`to-plan`: it copies the plan's own text by pointers, fills group templates,
+expands dependency and stage lists and can call the public `validate` and
+`operations preview`. `assets/compose.spec.json` is its shipped example, and
+`tests/compose_contract.rs` composes it against a fixture plan. It never
+imports or starts a run.
 
 AI working artifacts live outside this repository, in the container's `_work/` folder.
 

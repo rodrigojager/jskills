@@ -1,5 +1,5 @@
 ---
-name: estimator
+name: estimate-jtasks
 description: Estimate missing active task durations after jtasks plan slicing, in a fresh configured agent session. Preserve explicit estimates and all other plan intent; do not execute the plan or benchmark operations.
 ---
 
@@ -37,4 +37,4 @@ The helper writes the candidate only to the explicitly supplied scratch path, ca
 
 This is a separately invoked estimation workflow. Use the selected harness's documented fresh noninteractive invocation and explicit model/configuration; never resume a planner or task session. The optional Python helper is not part of the standalone Rust CLI runtime.
 
-Canonical source is `skills/source/estimator`; `scripts/skills.rs` builds and checks local Codex, Claude Code and OpenCode packages. Local packaging never installs or changes global skills.
+Canonical source is `skills/source/estimate-jtasks`; `scripts/skills.rs` builds and checks local Codex, Claude Code and OpenCode packages. Local packaging never installs or changes global skills.

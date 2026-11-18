@@ -75,7 +75,7 @@ sys.exit(payload.get('exit', 0))
         .unwrap();
         let mut command = Command::new(python());
         command
-            .arg(source().join("skills/source/estimator/scripts/estimate.py"))
+            .arg(source().join("skills/source/estimate-jtasks/scripts/estimate.py"))
             .arg(self.fixture.root.join("plan.json"))
             .arg("--policy")
             .arg(self.fixture.root.join("policy.json"))
