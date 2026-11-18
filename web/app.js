@@ -146,11 +146,23 @@ function taskRows(tasks) {
   const update=()=>{ const current=new URLSearchParams(); for (const [key,value] of [['q',search.value],['state',filter.value]]) if(value)current.set(key,value); history.replaceState(null,'',route('overview',Object.fromEntries(current))); apply(); };
   search.oninput=update; filter.onchange=update; apply(); return section;
 }
+// A long working directory is cut in the middle: its drive or root and its last folders stay visible, because the
+// end names the project. Folders are dropped from the middle until it fits; the full path stays in the tooltip.
+function fitFolder(node) {
+  const full=node?.dataset.full; if(!full || !node.isConnected) return;
+  const sep=full.includes('\\') ? '\\' : '/', parts=full.split(sep);
+  node.textContent=full;
+  for(let keep=parts.length-2; keep>=1 && node.scrollWidth>node.clientWidth; keep--) node.textContent=[parts[0],'…',...parts.slice(-keep)].join(sep);
+}
+const folderObserver=new ResizeObserver(entries=>{ for(const entry of entries) fitFolder(entry.target.querySelector('.project-folder')); });
 function projectHeading(data) {
   const heading=el('div',undefined,'project-heading');
   const title=el('div',undefined,'project-title'); title.append(el('h1',data.identity?.run || data.run || 'Your project'));
   const folder=data.identity?.checkout?.replace(/^\\\\\?\\/,'');
-  if(folder){ const path=el('span',folder,'project-folder'); path.title=`Working directory: ${folder}`; title.append(path); }
+  if(folder){
+    const path=el('span',folder,'project-folder'); path.title=`Working directory: ${folder}`; path.dataset.full=folder; title.append(path);
+    folderObserver.disconnect(); folderObserver.observe(title); requestAnimationFrame(()=>fitFolder(path));
+  }
   heading.append(el('p','PROJECT / TASKS','eyebrow'),title);
   return heading;
 }
