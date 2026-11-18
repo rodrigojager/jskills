@@ -43,6 +43,17 @@ Validate through `jtasks validate <plan.json>`, then show `jtasks operations pre
 
 Duration estimation is optional and separate. If requested after slicing, invoke the `estimate-jtasks` skill in a fresh session to fill only missing `estimate_seconds`; preserve explicit estimates, IDs, requirements, criteria, dependencies and reservations. Do not load estimator instructions into the planner by default, claim an unavailable estimator is installed, or run heavy operations to estimate them.
 
+## A run that is already imported
+
+Once the intent is imported, the run holds its own stored plan, and a new compose is not the revision: a recomposed intent carries plan text (shared context, requirement text, finished tasks) the run may have changed since, and a graph proposal refuses such rewrites. Edit the spec and compose again as usual, then let the CLI build the revision from the stored plan with only the changes:
+
+```text
+jtasks --root <container-or-checkout> graph revise --run <id> --add-tasks <intent.json> --depends <task>=<id>,<id> --reason "<why>" --dry-run --output <revision.json>
+jtasks --root <container-or-checkout> graph revise --run <id> --add-tasks <intent.json> --depends <task>=<id>,<id> --reason "<why>"
+```
+
+`--add-tasks` takes the composed intent: tasks the run already has keep their stored version, and only new task IDs are added, with the new requirements they map to declared as scope additions. `--depends` replaces the dependencies of a pending or new task. Show the dry run before applying when the change is not already approved. It reaches a live controller; never hand-edit a whole-plan proposal from a recomposed intent. Details are in the reference.
+
 ## Harness packaging
 
 {{HARNESS_GUIDANCE}}

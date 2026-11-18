@@ -54,15 +54,21 @@ fn accepted(f: &Fixture, p: &Value) -> Value {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     serde_json::from_slice(&o.stdout).unwrap()
 }
+/// Persisted state only: a running run's `elapsed` is measured at read time.
+fn persisted(f: &Fixture) -> Value {
+    let mut snapshot = f.snapshot();
+    snapshot.as_object_mut().unwrap().remove("elapsed");
+    snapshot
+}
 fn rejected(f: &Fixture, p: &Value) {
-    let before = f.snapshot();
+    let before = persisted(f);
     let o = submit(f, p);
     assert!(
         !o.status.success(),
         "unexpected success: {}",
         String::from_utf8_lossy(&o.stdout)
     );
-    assert_eq!(f.snapshot(), before, "rejected proposal mutated runtime");
+    assert_eq!(persisted(f), before, "rejected proposal mutated runtime");
 }
 fn db(f: &Fixture) -> Connection {
     Connection::open_with_flags(
@@ -481,4 +487,217 @@ fn relevant_pending_changes_invalidate_passed_prerequisite_without_erasing_recei
         2
     );
     assert_eq!(f.snapshot()["graph"]["coverage"][0]["satisfied"], true);
+}
+
+fn revise(f: &Fixture, extra: &[&str]) -> std::process::Output {
+    let mut args = vec!["graph", "revise", "--run", "demo"];
+    args.extend_from_slice(extra);
+    f.call(&args)
+}
+fn stored_plan(f: &Fixture) -> Value {
+    serde_json::from_str(
+        &db(f)
+            .query_row("SELECT plan FROM runs WHERE id='demo'", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap(),
+    )
+    .unwrap()
+}
+fn task_ids(plan: &Value) -> Vec<String> {
+    plan["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn revise_adds_tasks_and_rewires_pending_dependencies_after_the_plan_files_changed() {
+    let f = Fixture::new();
+    let mut b = mapped("B", "completed");
+    b["depends_on"] = json!(["A"]);
+    let mut p = plan(json!([mapped("A", "completed"), b]));
+    p["context"] = json!({"brief":"Shared context as imported"});
+    import(&f, &p);
+    // The plan files changed after import and the intent was composed again: shared
+    // context, requirement text and task text differ, and a new task N maps to a new
+    // requirement. Submitting it as a whole proposal is refused.
+    let mut recomposed = p.clone();
+    recomposed["context"]["brief"] = json!("Shared context rewritten in the plan files");
+    recomposed["requirements"] = json!([
+        {"id":"R","text":"Original hard requirement, edited later"},
+        {"id":"R2","text":"New use case"}
+    ]);
+    recomposed["tasks"][0]["title"] = json!("Retitled in the plan files");
+    let mut n = task("N", &["A"], "completed", "Attributable fixture outcome");
+    n["requirements"] = json!(["R2"]);
+    recomposed["tasks"].as_array_mut().unwrap().push(n);
+    rejected(&f, &proposal("whole", 0, recomposed.clone(), json!({})));
+    let intent = f.root.join("recomposed.json");
+    fs::write(&intent, recomposed.to_string()).unwrap();
+    let intent = intent.to_str().unwrap();
+
+    // A dry run writes the proposal for review and changes nothing.
+    let before = persisted(&f);
+    let review = f.root.join("revision.json");
+    let output = revise(
+        &f,
+        &[
+            "--add-tasks",
+            intent,
+            "--depends",
+            "B=A,N",
+            "--dry-run",
+            "--output",
+            review.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("A, B"));
+    assert_eq!(persisted(&f), before, "dry run mutated runtime");
+    let written: Value = serde_json::from_slice(&fs::read(&review).unwrap()).unwrap();
+    assert_eq!(written["base_revision"], 0);
+    assert_eq!(written["plan"]["context"], stored_plan(&f)["context"]);
+    assert_eq!(written["plan"]["tasks"][0]["title"], "Fixture A");
+    assert_eq!(written["plan"]["tasks"][1]["depends_on"], json!(["A", "N"]));
+    assert_eq!(task_ids(&written["plan"]), ["A", "B", "N"]);
+    assert_eq!(
+        written["plan"]["requirements"],
+        json!([
+            {"id":"R","text":"Original hard requirement"},
+            {"id":"R2","text":"New use case"}
+        ])
+    );
+    assert_eq!(written["scope_additions"].as_object().unwrap().len(), 1);
+    assert!(
+        written["scope_additions"]["R2"]
+            .as_str()
+            .unwrap()
+            .contains("add N")
+    );
+
+    // Applied without hand editing; the derived request ID matches the reviewed one.
+    let args = ["--add-tasks", intent, "--depends", "B=A,N"];
+    let output = revise(&f, &args);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let receipt: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(receipt["revision"], 1);
+    assert_eq!(receipt["request_id"], written["request_id"]);
+    assert_eq!(receipt["current_total"], 3);
+    assert_eq!(
+        receipt["scope_additions"]["R2"],
+        written["scope_additions"]["R2"]
+    );
+    let stored = stored_plan(&f);
+    assert_eq!(stored["tasks"][1]["depends_on"], json!(["A", "N"]));
+    assert_eq!(stored["context"]["brief"], "Shared context as imported");
+    // Nothing left to change: refused without a new revision.
+    let before = persisted(&f);
+    assert!(!revise(&f, &args).status.success());
+    assert_eq!(persisted(&f), before);
+
+    // The revised graph runs to completion with every requirement covered.
+    let output = f.call(&["run", "--run", "demo"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let status = f.snapshot();
+    assert!(
+        status["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["state"] == "completed"),
+        "{status}"
+    );
+    assert_eq!(status["graph"]["revision"], 1);
+    assert!(
+        status["graph"]["coverage"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["satisfied"] == true)
+    );
+}
+
+#[test]
+fn revise_reaches_a_live_controller_and_refuses_bad_changes_without_mutation() {
+    let f = Fixture::new();
+    let mut a = mapped("A", "completed");
+    a["executor"]["delay_ms"] = json!(1500);
+    let mut b = mapped("B", "completed");
+    b["depends_on"] = json!(["A"]);
+    import(&f, &plan(json!([a, b])));
+    let additions = f.root.join("additions.json");
+    let mut n = task("N", &["A"], "completed", "Attributable fixture outcome");
+    n["requirements"] = json!(["R2"]);
+    fs::write(
+        &additions,
+        json!({"tasks":[n],"requirements":[{"id":"R2","text":"New use case"}]}).to_string(),
+    )
+    .unwrap();
+    let additions = additions.to_str().unwrap();
+    // A new requirement without text, an unknown task, a cycle and no change are refused.
+    let unmapped = f.root.join("unmapped.json");
+    let mut m = task("M", &[], "completed", "Attributable fixture outcome");
+    m["requirements"] = json!(["R3"]);
+    fs::write(&unmapped, json!([m]).to_string()).unwrap();
+    let before = persisted(&f);
+    for bad in [
+        vec!["--add-tasks", unmapped.to_str().unwrap()],
+        vec!["--depends", "X=A"],
+        vec!["--depends", "A=B"],
+        vec![],
+    ] {
+        let output = revise(&f, &bad);
+        assert!(!output.status.success(), "{bad:?} was accepted");
+    }
+    assert_eq!(persisted(&f), before);
+
+    let child = f
+        .command()
+        .args(["run", "--run", "demo"])
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut running = Running { fixture: &f, child };
+    f.await_status(|s| s["tasks"][0]["state"] == "running");
+    let output = revise(
+        &f,
+        &[
+            "--add-tasks",
+            additions,
+            "--depends",
+            "B=N",
+            "--reason",
+            "Add N before B",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let receipt: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(receipt["reason"], "Add N before B");
+    assert_eq!(receipt["scope_additions"]["R2"], "Add N before B");
+    let status = f.await_status(|s| {
+        let tasks = s["tasks"].as_array().unwrap();
+        tasks.len() == 3 && tasks.iter().all(|t| t["state"] == "completed")
+    });
+    assert_eq!(status["graph"]["revision"], 1);
+    let _ = running.child.wait().unwrap();
+    assert_eq!(stored_plan(&f)["tasks"][1]["depends_on"], json!(["N"]));
 }
