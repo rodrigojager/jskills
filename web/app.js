@@ -166,8 +166,8 @@ function projectHeading(data) {
   heading.append(el('p','PROJECT / TASKS','eyebrow'),title);
   return heading;
 }
-function projectTabs(tasks) {
-  const container=el('div',undefined,'project-tabs-content'), actions=el('div',undefined,'project-tabs'), host=el('section',undefined,'feed-content'), list=taskRows(tasks);
+function projectTabs(tasks,control) {
+  const container=el('div',undefined,'project-tabs-content'), row=el('div',undefined,'project-tabs'), actions=el('div',undefined,'tab-list'), host=el('section',undefined,'feed-content'), list=taskRows(tasks);
   actions.setAttribute('role','tablist'); actions.setAttribute('aria-label','Project views');
   host.hidden=true; host.id='project-event-feed'; host.setAttribute('role','tabpanel');
   list.id='project-task-list'; list.setAttribute('role','tabpanel'); list.setAttribute('aria-labelledby','tab-tasks');
@@ -214,15 +214,191 @@ function projectTabs(tasks) {
       host.append(events,button('Older records ↓',()=>fetchPage(next),!data.page.has_more),note);
     }catch(e){if(token===request && page===generation && host.isConnected)host.replaceChildren(el('p',`Project events unavailable: ${e.message}`,'muted'),button('Retry',()=>fetchPage(after)));}
   }
-  container.append(actions,list,host);return container;
+  row.append(actions,controlIcons(tasks,control));
+  container.append(row,list,host);return container;
 }
-function renderDashboard(data,tasks) {
+// ---- Run controls: Stop, Continue and Agents --------------------------------------------------------------
+// The renderer never talks to the CLI itself. The transport supplies the actions; a screen without an action does
+// not show its icon. Orca: window.jtasksTransport.actions. Browser: fetch with the page token (meta jtasks-token).
+//   actions.stop()                  -> ask the run's controller to stop
+//   actions.continue()              -> open or focus the terminal that continues the run (Orca only)
+//   actions.agentsList()            -> {run, aliases:[{alias, role, tasks, states, configuration, source}]}
+//   actions.agentsChoices(executor) -> {executor, catalogue, models, in_use, efforts, free_text}
+//   actions.agentsSet({alias, executor?, provider?, model?, effort?})
+const EXECUTORS = ['claude', 'codex', 'opencode'];
+function browserActions() {
+  const token = document.querySelector('meta[name=jtasks-token]')?.content;
+  if (!token || token.startsWith('@@')) return {}; // an unsubstituted placeholder is no token
+  const call = async (path, body) => {
+    const response = await fetch(path, {method: body ? 'POST' : 'GET', headers: {'X-Jtasks-Token': token, ...(body ? {'Content-Type': 'application/json'} : {})}, body: body ? JSON.stringify({actor: 'web-dashboard', ...body}) : undefined, signal: AbortSignal.timeout(15000), cache: 'no-store'});
+    const text = await response.text();
+    let data = {}; try { data = text ? JSON.parse(text) : {}; } catch { /* a non-JSON body keeps the status message */ }
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    return data;
+  };
+  return {
+    stop: () => call('/api/stop', {}),
+    agentsList: () => call('/api/agents'),
+    agentsChoices: executor => call(`/api/agents/choices?${new URLSearchParams({executor})}`),
+    agentsSet: change => call('/api/agents', change),
+  };
+}
+const controlActions = () => window.jtasksTransport ? (window.jtasksTransport.actions || {}) : browserActions();
+const remaining = counts => ['running', 'pending', 'failed', 'other'].reduce((n, k) => n + Number(counts?.[k] || 0), 0);
+async function controlState(data) {
+  const actions = controlActions();
+  // The web dashboard is served by the run's own controller, so it exists only while that controller is live.
+  const info = {actions, run: data.identity?.run, controller: window.jtasksTransport ? null : 'live', counts: null, last_event_at: null};
+  if (window.jtasksTransport) {
+    try {
+      const found = (await read('runs', {limit: 100})).runs?.find(r => r.run === info.run);
+      if (found) Object.assign(info, {controller: found.controller, counts: found.counts, last_event_at: found.last_event_at});
+    } catch { /* without the runs list no icon claims a state it cannot know */ }
+  }
+  return info;
+}
+function ago(value) {
+  const text = String(value), ms = Date.now() - new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(text) ? text : `${text.replace(' ', 'T')}Z`).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return '';
+  const m = Math.floor(ms / 60000), h = Math.floor(m / 60), d = Math.floor(h / 24);
+  return d ? `${d} d ago` : h ? `${h} h ago` : m ? `${m} min ago` : 'just now';
+}
+function reminderLine(control) {
+  if (!control || control.controller !== 'stopped' || !remaining(control.counts)) return null;
+  const left = remaining(control.counts), when = control.last_event_at ? ago(control.last_event_at) : '';
+  const note = el('div', undefined, 'resume-note'); note.setAttribute('role', 'status');
+  note.append(el('span', `This run stopped${when ? ` ${when}` : ''} with ${left} task${left === 1 ? '' : 's'} left.`));
+  if (control.actions.continue) { const m = el('span', 'Press '); m.append(el('b', '▶', 'play-mark'), document.createTextNode(' to continue.')); note.append(m); }
+  return note;
+}
+function iconButton(cls, glyph, name, onclick) {
+  const b = el('button', undefined, `icon-action ${cls}`); b.type = 'button'; b.title = name; b.setAttribute('aria-label', name); b.onclick = onclick;
+  const g = el('span', glyph); g.setAttribute('aria-hidden', 'true'); b.append(g); return b;
+}
+function controlIcons(tasks, control) {
+  const box = el('div', undefined, 'tab-actions'); box.setAttribute('role', 'group'); box.setAttribute('aria-label', 'Run controls');
+  if (!control) return box;
+  const {actions} = control;
+  if (actions.stop && control.controller === 'live') box.append(iconButton('stop', '■', 'Stop run', e => stopDialog(tasks, control, e.currentTarget)));
+  if (actions.continue && control.controller === 'stopped' && remaining(control.counts)) box.append(iconButton('play', '▶', 'Continue run', async e => {
+    const b = e.currentTarget; b.disabled = true;
+    try { const r = await actions.continue(); toast(r?.message || 'Opened the terminal that continues this run.'); setTimeout(() => load(false), 1500); }
+    catch (err) { toast(`Cannot continue: ${err.message}`, true); } finally { b.disabled = false; }
+  }));
+  if (actions.agentsList) box.append(iconButton('agents', '⚙', 'Agents', e => agentsDialog(control, e.currentTarget)));
+  return box;
+}
+function toast(text, bad = false) {
+  document.querySelector('.toast')?.remove();
+  const t = el('div', text, `toast${bad ? ' bad' : ''}`); t.setAttribute('role', bad ? 'alert' : 'status'); document.body.append(t);
+  setTimeout(() => t.remove(), 5000);
+}
+// A native modal dialog gives the focus trap, Esc and the backdrop; focus returns to the icon that opened it.
+function openDialog(title, opener) {
+  const d = el('dialog', undefined, 'dialog'), heading = el('h3', title); heading.id = `dialog-${Date.now()}`;
+  d.setAttribute('aria-labelledby', heading.id); d.append(heading);
+  d.addEventListener('close', () => { d.remove(); if (opener?.isConnected) opener.focus(); });
+  d.addEventListener('click', e => { if (e.target === d) d.close(); });
+  document.body.append(d); d.showModal(); return d;
+}
+function stopDialog(tasks, control, opener) {
+  const running = tasks.filter(t => t.state === 'running').map(t => t.id);
+  const d = openDialog(`Stop ${control.run}?`, opener);
+  d.append(el('p', running.length
+    ? `The controller and the ${running.length} running task${running.length === 1 ? '' : 's'} (${running.join(', ')}) stop now. Their edits stay in the project; each starts again from scratch when you continue. Nothing else changes.`
+    : 'The controller stops now. No task is running. Nothing else changes.'));
+  const failure = el('p', undefined, 'dialog-error'); failure.setAttribute('role', 'alert'); failure.hidden = true;
+  const keep = button('Keep running', () => d.close()), stop = el('button', '■ Stop run', 'danger'); stop.type = 'button';
+  stop.onclick = async () => {
+    stop.disabled = keep.disabled = true; failure.hidden = true;
+    try { await control.actions.stop(); d.close(); toast(window.jtasksTransport ? 'Stop requested. The run ends; press Continue to resume it.' : 'This run has stopped; this page will close.'); setTimeout(() => load(false), 1500); }
+    catch (err) { failure.textContent = `Could not stop: ${err.message}`; failure.hidden = false; stop.disabled = keep.disabled = false; }
+  };
+  const actions = el('div', undefined, 'dialog-actions'); actions.append(keep, stop);
+  d.append(failure, actions); keep.focus();
+}
+async function agentsDialog(control, opener) {
+  const d = openDialog(`Agents of ${control.run}`, opener), body = el('div'), loading = el('p', 'Reading agents…', 'muted'); d.append(body, loading);
+  let list;
+  try { list = (await control.actions.agentsList()).aliases; }
+  catch (err) { loading.textContent = `Agents unavailable: ${err.message}`; const close = button('Close', () => d.close()); d.append(close); close.focus(); return; }
+  loading.remove();
+  const running = control.controller === 'live';
+  body.append(el('p', `Each name is an alias the tasks point to. A change applies to every task that has not started yet${running ? '; running tasks keep the agent they started with' : ''}. Finished tasks keep their history.`));
+  const choicesCache = new Map(), rows = [], fallback = {models: [], efforts: [], free_text: true};
+  const choices = executor => {
+    if (!choicesCache.has(executor)) choicesCache.set(executor, control.actions.agentsChoices ? control.actions.agentsChoices(executor).catch(() => fallback) : Promise.resolve(fallback));
+    return choicesCache.get(executor);
+  };
+  const select = (label, parent) => { const l = el('label', label), s = el('select'); l.append(s); parent.append(l); return s; };
+  const fill = (node, values, current) => { node.replaceChildren(); for (const v of new Set([...(current ? [current] : []), ...values])) { const o = el('option', v); o.value = v; node.append(o); } node.value = current || values[0] || ''; };
+  const summary = el('div', 'No changes.', 'effect'), save = button('Save', () => commit());
+  summary.setAttribute('role', 'status'); save.classList.add('primary'); save.disabled = true;
+  for (const a of list) {
+    const cfg = a.configuration || {}, box = el('div', undefined, 'alias'), head = el('div', undefined, 'alias-head');
+    const ids = a.tasks || [], total = ids.length, plural = `${total} task${total === 1 ? '' : 's'}`;
+    head.append(el('b', a.alias), el('small', a.role === 'observer' ? `reviews ${plural}` : `${plural}${total ? ` · ${ids.slice(0, 6).join(', ')}${total > 6 ? ` +${total - 6}` : ''}` : ''}`));
+    const fields = el('div', undefined, 'fields'), agent = select('Agent', fields), model = select('Model', fields), effort = select('Effort', fields);
+    const providerLabel = el('label', 'Provider'), provider = el('input'); provider.value = cfg.provider || ''; provider.setAttribute('autocomplete', 'off'); providerLabel.append(provider); fields.append(providerLabel);
+    const freeModel = el('input'); freeModel.hidden = true; model.parentElement.append(freeModel);
+    for (const [n, name] of [[agent, 'Agent'], [model, 'Model'], [freeModel, 'Model name'], [effort, 'Effort'], [provider, 'Provider']]) n.setAttribute('aria-label', `${name} of ${a.alias}`);
+    fill(agent, EXECUTORS, cfg.executor);
+    const row = {alias: a, provider};
+    row.value = () => ({executor: agent.value, model: freeModel.hidden ? model.value : freeModel.value.trim(), effort: effort.disabled ? '' : effort.value, provider: provider.value.trim()});
+    row.dirty = () => {
+      const v = row.value(), mark = (n, now, was) => n.classList.toggle('changed', now !== (was || ''));
+      mark(agent, v.executor, cfg.executor); mark(model, v.model, cfg.model); mark(freeModel, v.model, cfg.model); mark(effort, v.effort, cfg.effort); mark(provider, v.provider, cfg.provider);
+      return v.executor !== (cfg.executor || '') || v.model !== (cfg.model || '') || v.effort !== (cfg.effort || '') || (!provider.disabled && v.provider !== (cfg.provider || ''));
+    };
+    row.load = async () => {
+      const c = await choices(agent.value), same = agent.value === cfg.executor;
+      model.hidden = !!c.free_text; freeModel.hidden = !c.free_text;
+      if (c.free_text) freeModel.value = same ? cfg.model || '' : ''; else fill(model, c.models || [], same ? cfg.model : (c.models || [])[0]);
+      const levels = c.efforts || []; effort.disabled = !levels.length;
+      fill(effort, levels, same ? cfg.effort : levels[Math.min(1, levels.length - 1)]);
+      provider.disabled = agent.value !== 'opencode'; if (provider.disabled && !same) provider.value = '';
+      summarize();
+    };
+    agent.onchange = () => row.load();
+    for (const n of [model, effort, provider, freeModel]) n.oninput = summarize;
+    box.append(head, fields);
+    const states = Object.entries(a.states || {}).map(([k, n]) => `${n} ${human(k)}`).join(', ');
+    if (states) box.append(el('div', states, 'effect'));
+    body.append(box); rows.push(row);
+  }
+  const failure = el('p', undefined, 'dialog-error'); failure.setAttribute('role', 'alert'); failure.hidden = true;
+  async function commit() {
+    const changed = rows.filter(r => r.dirty()); if (!changed.length) return;
+    save.disabled = true; failure.hidden = true;
+    try {
+      for (const r of changed) {
+        const v = r.value(), change = {alias: r.alias.alias, executor: v.executor, model: v.model};
+        if (v.effort) change.effort = v.effort;
+        if (!r.provider.disabled && v.provider) change.provider = v.provider;
+        await control.actions.agentsSet(change);
+      }
+      d.close(); toast('Saved. Tasks that start from now use the chosen agents.'); setTimeout(() => load(false), 500);
+    } catch (err) { failure.textContent = `Not saved: ${err.message}`; failure.hidden = false; save.disabled = false; }
+  }
+  function summarize() {
+    const changed = rows.filter(r => r.dirty()); save.disabled = !changed.length;
+    if (!changed.length) { summary.textContent = 'No changes.'; return; }
+    const count = state => changed.reduce((n, r) => n + Number(r.alias.states?.[state] || 0), 0), waiting = count('pending'), live = count('running');
+    summary.replaceChildren(el('strong', changed.map(r => r.alias.alias).join(', ')), document.createTextNode(` will change. It applies to ${waiting} task${waiting === 1 ? '' : 's'} that ${waiting === 1 ? 'has' : 'have'} not started${live ? `; ${live} running ${live === 1 ? 'keeps' : 'keep'} the agent ${live === 1 ? 'it' : 'they'} started with` : ''}.`));
+  }
+  const actions = el('div', undefined, 'dialog-actions'), cancel = button('Cancel', () => d.close()); actions.append(cancel, save);
+  d.append(summary, failure, actions);
+  await Promise.all(list.map((_, i) => rows[i] && rows[i].load().catch(() => {})));
+  (d.querySelector('select:not(:disabled)') || cancel).focus();
+}
+function renderDashboard(data,tasks,control) {
   const panel=el('section',undefined,'project-panel');panel.setAttribute('aria-label','Project tasks and progress');
-  panel.append(projectHeading(data),progressPanel(tasks,data),projectTabs(tasks));
+  panel.append(projectHeading(data),progressPanel(tasks,data),projectTabs(tasks,control));
   // An automatic refresh keeps the reader's place: list scroll, page scroll and the focused row.
   const oldList=main.querySelector('.task-list'), listTop=oldList?.scrollTop || 0, pageTop=document.scrollingElement?.scrollTop || 0;
   const focused=main.contains(document.activeElement) ? document.activeElement.closest('[data-task]')?.dataset.task : null;
-  main.replaceChildren(panel);
+  const reminder=reminderLine(control);
+  main.replaceChildren(...(reminder ? [reminder] : []),panel);
   const list=main.querySelector('.task-list'); if(list)list.scrollTop=listTop;
   if(document.scrollingElement)document.scrollingElement.scrollTop=pageTop;
   if(focused)main.querySelector(`[data-task="${CSS.escape(focused)}"]`)?.focus({preventScroll:true});
@@ -293,11 +469,12 @@ async function load(moveFocus = true) {
     const dashboard = ['overview','tasks'].includes(view);
     const data = await read(dashboard ? 'status' : kind, fields);
     const tasks = dashboard ? await allTasks(data,ticket) : null;
+    const control = dashboard ? await controlState(data) : null;
     if (ticket !== generation) return;
     error.hidden = true; connection.textContent = translated('snapshot', 'Snapshot available · read only'); metadata(data);
     // The dashboard replaces itself in one step (renderDashboard), so its scroll and focus survive a refresh.
     if (!dashboard) main.replaceChildren(el('h2', view === 'task' || view === 'operation' ? `${human(view)} ${params.get('id')}` : translated(view, human(view))));
-    if (dashboard) { renderDashboard(data,tasks); }
+    if (dashboard) { renderDashboard(data,tasks,control); }
     else if (view === 'task') taskDetail(data);
     else if (view === 'output') output(data,params);
     else if (view === 'operation') {
@@ -328,6 +505,7 @@ window.addEventListener('hashchange', () => load());
 document.querySelector('#refresh').onclick = () => load(false);
 // Only overview refreshes automatically. No output polling or hidden-tab traffic. A pause is always said on screen.
 function pauseReason() {
+  if (document.querySelector('dialog[open]')) return 'Auto-refresh paused while a dialog is open';
   if (main.querySelector('.task-item[open]')) return 'Auto-refresh paused while a task is open';
   if (main.querySelector('.project-tabs [aria-selected=true]:not(#tab-tasks)')) return 'Auto-refresh paused on this tab';
   if (document.activeElement?.matches?.('input')) return 'Auto-refresh paused while typing';
