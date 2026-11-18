@@ -17,6 +17,7 @@ use std::{
 };
 
 pub use super::codex::PermissionMode;
+const BACKGROUND_WAITING_TOOLS: &str = "Monitor,ScheduleWakeup";
 fn executable() -> String {
     "claude".into()
 }
@@ -165,6 +166,10 @@ pub fn launch(
             "--include-partial-messages",
             "--permission-prompts",
             "none",
+            // A non-interactive turn that ends to wait for background work
+            // must return its result first; deny the tools that wait that way.
+            "--disallowed-tools",
+            BACKGROUND_WAITING_TOOLS,
         ])
         .arg("--json-schema")
         .arg(serde_json::to_string(&schema)?);
@@ -232,7 +237,7 @@ pub fn launch(
         serde_json::to_vec_pretty(&json!({
         "task_id":task.id,"attempt_id":attempt,"configuration":config,"session_id":session,"resumed":resumed,
         "capabilities":{"direct_execution":true,"raw_output_capture":true,"structured_native_final":true,"exact_session_resume":true,
-        "permissions":permission,"permission_prompts":"none","provider":config.provider,
+        "permissions":permission,"permission_prompts":"none","provider":config.provider,"disallowed_tools":BACKGROUND_WAITING_TOOLS,
         "effective_configuration":"invocation overrides recorded; native init fields observed when supplied; account access unknown",
         "limitations":["native helpers are harness-managed", "native settings/hooks and managed policy still apply", "restricted dontAsk is permission denial, not an OS sandbox", "provider credentials and endpoint configuration remain native", "batch shims require explicit native or PowerShell executable", "Linux deliberately detached sessions escape process-group custody"]}}))?,
     )?;
@@ -263,6 +268,7 @@ pub fn observe(dir: &Path, task: &str, attempt: &str) -> Result<(Observation, Op
     };
     let mut final_value = None;
     let mut initialized = false;
+    let mut last_turn_failure: Option<&'static str> = None;
     let mut quota_rejected = false;
     let mut reader =
         crate::read::output::Records::new(BufReader::new(File::open(&observation.raw_stdout)?));
@@ -292,15 +298,19 @@ pub fn observe(dir: &Path, task: &str, attempt: &str) -> Result<(Observation, Op
         }
         match (value["type"].as_str(), value["subtype"].as_str()) {
             (Some("system"), Some("init")) => {
-                if initialized {
-                    observation.protocol_error =
-                        Some("multiple native initialization records".into());
-                }
-                initialized = true;
-                observation.session_id = value["session_id"]
+                let session = value["session_id"]
                     .as_str()
                     .filter(|s| uuid::Uuid::parse_str(s).is_ok())
                     .map(str::to_owned);
+                // A session that wakes up for background work starts each
+                // later turn with a fresh init of the same exact session.
+                if initialized && session != observation.session_id {
+                    observation.protocol_error =
+                        Some("native initialization differs from initialized exact session".into());
+                    continue;
+                }
+                initialized = true;
+                observation.session_id = session;
                 if observation.session_id.is_none() {
                     observation.protocol_error =
                         Some("missing exact native session identity".into());
@@ -324,24 +334,21 @@ pub fn observe(dir: &Path, task: &str, attempt: &str) -> Result<(Observation, Op
                 }
             }
             (Some("result"), _) => {
-                if observation.completed_turn {
-                    observation.protocol_error = Some("multiple root native result records".into());
-                }
+                // One session may end several turns (it can wake up for
+                // background work); the last root result decides the turn and
+                // the latest designated output is the attempt's result.
                 if !initialized || value["session_id"].as_str() != observation.session_id.as_deref()
                 {
                     observation.protocol_error =
                         Some("native result differs from initialized exact session".into());
+                    continue;
                 }
-                if value["subtype"] != "success" || value["is_error"] != false {
-                    observation.protocol_error = Some("native turn failed".into());
-                    observation.failure_class =
-                        Some(super::codex::classify_error(&value.to_string()).into());
-                }
+                last_turn_failure = (value["subtype"] != "success" || value["is_error"] != false)
+                    .then(|| super::codex::classify_error(&value.to_string()));
                 observation.completed_turn = true;
-                final_value = value
-                    .get("structured_output")
-                    .filter(|v| !v.is_null())
-                    .cloned();
+                if let Some(output) = value.get("structured_output").filter(|v| !v.is_null()) {
+                    final_value = Some(output.clone());
+                }
             }
             (
                 Some("assistant" | "user" | "stream_event" | "tool_progress" | "tool_use_summary"),
@@ -349,6 +356,12 @@ pub fn observe(dir: &Path, task: &str, attempt: &str) -> Result<(Observation, Op
             ) => observation.activity_records += 1,
             _ => observation.unknown_records += 1,
         }
+    }
+    if let Some(class) = last_turn_failure {
+        observation
+            .protocol_error
+            .get_or_insert_with(|| "native turn failed".into());
+        observation.failure_class = Some(class.into());
     }
     if quota_rejected
         && !(observation.completed_turn && observation.protocol_error.is_none())

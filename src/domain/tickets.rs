@@ -132,6 +132,10 @@ pub fn render(plan: &Plan, task: &Task, attempt: &str, facts: &RecoveryFacts) ->
     out
 }
 
+/// Every worker reads this: the end of a native turn demands the designated
+/// result, so waiting for background work must stay inside one turn.
+pub const LONG_COMMANDS: &str = "## Long commands\nRun a long command in the foreground with a timeout long enough for it to finish, or through `jtasks exec start --request <command.json>` and `jtasks exec wait <handle> --wait-seconds <n>`, repeating the wait until it ends. Never end your turn to wait for background work with a monitor, a scheduled wake-up or a background task notification: the end of your turn demands your result. Submit your outcome only when the work is done.";
+
 /// Called after durable launch intent and before spawning any worker.
 pub fn write_attempt_ticket(workspace: &Workspace, task: &Task, attempt: &str) -> Result<PathBuf> {
     crate::domain::validation::identifier(attempt)?;
@@ -183,7 +187,7 @@ pub fn write_attempt_ticket(workspace: &Workspace, task: &Task, attempt: &str) -
     fs::write(
         &path,
         format!(
-            "{}\n## Effective autonomy: {mode}\n{instructions}\nNative permissions are not an OS sandbox. Scope, required outcomes and budgets remain enforced. Do not invent credentials or facts. Native helper policy inheritance is harness-managed and not guaranteed by jtasks. Keep private reasoning and secrets out of records.\n\nSame-task explicit decisions/questions/answers (journal sequence; attributable claims):\n```json\n{}\n```\n",
+            "{}\n## Effective autonomy: {mode}\n{instructions}\nNative permissions are not an OS sandbox. Scope, required outcomes and budgets remain enforced. Do not invent credentials or facts. Native helper policy inheritance is harness-managed and not guaranteed by jtasks. Keep private reasoning and secrets out of records.\n\n{LONG_COMMANDS}\n\nSame-task explicit decisions/questions/answers (journal sequence; attributable claims):\n```json\n{}\n```\n",
             render(&plan, task, attempt, &facts),
             serde_json::to_string_pretty(&same_task)?
         ),

@@ -35,8 +35,16 @@ if mode=='identity': result['task_id']='OTHER'
 if mode=='empty': result['summary']=' '
 if mode=='error': native.update(subtype='error_during_execution',is_error=True,errors=['authentication rejected'])
 if mode=='mismatch': native['session_id']='88888888-8888-4888-8888-888888888888'
+if mode in ('wakeup','wakeup-trailing','foreign','reinit-foreign','failed-last'):
+    # A session that waits on background work ends a turn, wakes up with a
+    # fresh init of its session and ends another turn.
+    interim=dict(result,outcome='failed',summary='not finished: a background build is running')
+    emit(dict(native,structured_output=interim,result=json.dumps(interim)))
+    emit({'type':'system','subtype':'init','session_id':'77777777-7777-4777-8777-777777777777' if mode=='reinit-foreign' else session,'model':'native-resolved-model','permissionMode':permission})
+    if mode=='foreign': native['session_id']='88888888-8888-4888-8888-888888888888'
+    if mode=='failed-last': native.update(subtype='error_during_execution',is_error=True,errors=['authentication rejected'])
 if mode not in ('helper','missing','noterminal'): emit(native)
-if mode=='double': emit(native)
+if mode=='wakeup-trailing': emit({'type':'result','subtype':'success','is_error':False,'session_id':session,'result':'nothing new to check'})
 if mode=='partial': os.write(1,b'{"unfinished":')
 os.write(2,b'available diagnostic bytes\n')
 "#;
@@ -101,6 +109,9 @@ fn public_cli_launches_native_flags_with_literal_stdin_and_preserves_raw_chunks(
             .contains("$(Write-Output INJECTED)")
     );
     assert!(seen["prompt"].as_str().unwrap().contains("日本語"));
+    let prompt = seen["prompt"].as_str().unwrap();
+    assert!(prompt.contains("## Long commands") && prompt.contains("jtasks exec wait"));
+    assert!(prompt.contains("Never end your turn to wait for background work"));
     let args = seen["args"].as_array().unwrap();
     for option in [
         "-p",
@@ -116,6 +127,8 @@ fn public_cli_launches_native_flags_with_literal_stdin_and_preserves_raw_chunks(
         "native-reviewer",
         "--permission-prompts",
         "none",
+        "--disallowed-tools",
+        "Monitor,ScheduleWakeup",
         "--dangerously-skip-permissions",
         "bypassPermissions",
     ] {
@@ -164,7 +177,6 @@ fn only_root_structured_result_or_scoped_client_can_complete() {
         ("error", false, "needs_intervention"),
         ("session", false, "retry_exhausted"),
         ("mismatch", false, "retry_exhausted"),
-        ("double", false, "retry_exhausted"),
     ] {
         let f = setup(mode);
         let status = run(&f);
@@ -181,6 +193,46 @@ fn only_root_structured_result_or_scoped_client_can_complete() {
                     .unwrap(),
                 1
             );
+        }
+    }
+}
+
+#[test]
+fn a_session_that_wakes_up_for_background_work_keeps_its_last_result() {
+    for (mode, completed, state) in [
+        ("wakeup", true, "completed"),
+        ("wakeup-trailing", true, "completed"),
+        ("foreign", false, "retry_exhausted"),
+        ("reinit-foreign", false, "retry_exhausted"),
+        ("failed-last", false, "needs_intervention"),
+    ] {
+        let f = setup(mode);
+        let status = run(&f);
+        assert_eq!(status["complete"], completed, "{mode}: {status}");
+        assert_eq!(status["tasks"][0]["state"], state, "{mode}: {status}");
+        let observation = read(dir(&f, &status).join("claude-observation.json"));
+        let conn = rusqlite::Connection::open(f.data.join("state.sqlite3")).unwrap();
+        let (outcome, summary): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT outcome,summary FROM attempts ORDER BY rowid LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        if completed {
+            assert!(
+                observation["protocol_error"].is_null(),
+                "{mode}: {observation}"
+            );
+            assert_eq!(observation["result_source"], "native_structured_output");
+            assert_eq!(outcome.as_deref(), Some("completed"), "{mode}");
+            assert_eq!(summary.as_deref(), Some("substitute completed"), "{mode}");
+        } else {
+            assert!(
+                observation["protocol_error"].is_string(),
+                "{mode}: {observation}"
+            );
+            assert_eq!(outcome.as_deref(), Some("failed"), "{mode}");
         }
     }
 }
