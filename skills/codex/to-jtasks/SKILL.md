@@ -9,6 +9,13 @@ The input is always a plan written by `to-plan`: its `PLAN.md` with the fixed se
 
 Slice the requested work into useful deliverables and dependencies first. Preserve original requirements and IDs, concrete acceptance outcomes, named dependency artifacts and scope limits in task context. Use explicit file or named reservations for concurrent work. Do not generate a heavy check for every small edit by habit.
 
+**Nothing in a run waits for a person.** Tasks run unattended, and a worker cannot receive an answer during the run. So:
+
+- Never write a task, limit or acceptance line that asks the user, waits for a confirmation or an approval, or needs someone at the screen. A decision a task would need is decided in its context with the best answer for the user (the plan's recommendation, written as decided); an installation, a replacement or another action the plan needs is authorized there.
+- A check that a person would do is done by the task itself through automation (Playwright or another browser driver, mouse and keyboard control of the app, a CLI or API call). When it cannot be automated, the task takes it as approved, records what it could not check in PROGRESS.md, and completes.
+- What truly needs the person (a credential they hold, a purchase, a physical device) is ready before the run starts; it is not a task.
+- The user reviews the finished work afterwards, in a pair-programming session or by asking for another run with what did and did not work.
+
 For **each future plan**, explicitly ask the user both decisions, even when a previous queue used a particular policy:
 
 1. **Completion:** judgment with a designated summary alone, or judgment plus required checks? Explain which outcomes need a check. The current schema encodes `completion: "judgment"` in both cases; required operation results enforce the additional checks. Do not invent `completion: "checks"`.
