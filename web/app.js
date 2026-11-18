@@ -148,7 +148,10 @@ function taskRows(tasks) {
 }
 function projectHeading(data) {
   const heading=el('div',undefined,'project-heading');
-  heading.append(el('p','PROJECT / TASKS','eyebrow'),el('h1',data.identity?.run || data.run || 'Your project'));
+  const title=el('div',undefined,'project-title'); title.append(el('h1',data.identity?.run || data.run || 'Your project'));
+  const folder=data.identity?.checkout?.replace(/^\\\\\?\\/,'');
+  if(folder){ const path=el('span',folder,'project-folder'); path.title=`Working directory: ${folder}`; title.append(path); }
+  heading.append(el('p','PROJECT / TASKS','eyebrow'),title);
   return heading;
 }
 function projectTabs(tasks) {
@@ -280,7 +283,8 @@ async function load(moveFocus = true) {
     const tasks = dashboard ? await allTasks(data,ticket) : null;
     if (ticket !== generation) return;
     error.hidden = true; connection.textContent = translated('snapshot', 'Snapshot available · read only'); metadata(data);
-    main.replaceChildren(el('h2', view === 'task' || view === 'operation' ? `${human(view)} ${params.get('id')}` : translated(view, human(view))));
+    // The dashboard replaces itself in one step (renderDashboard), so its scroll and focus survive a refresh.
+    if (!dashboard) main.replaceChildren(el('h2', view === 'task' || view === 'operation' ? `${human(view)} ${params.get('id')}` : translated(view, human(view))));
     if (dashboard) { renderDashboard(data,tasks); }
     else if (view === 'task') taskDetail(data);
     else if (view === 'output') output(data,params);
