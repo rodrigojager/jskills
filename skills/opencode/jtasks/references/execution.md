@@ -2,7 +2,16 @@
 
 ## Commands under custody
 
-The run provides the command controller. Standalone command management uses an explicit foreground `jtasks exec serve`; do not start a competing service inside a live run. Use `jtasks exec start --request <command.json>`. Its JSON receipt gives the stable command handle. Reuse a stable `request_id` only for an identical request after a lost response; choose a new request for a deliberate different command.
+The run provides the command controller. Standalone command management uses an explicit foreground `jtasks exec serve`; do not start a competing service inside a live run. Run long work (builds, test suites, images) as a managed command, never in the background and never by ending the turn to wait for it: the end of a worker's turn demands its result. Inside a worker, one call starts and waits:
+
+```text
+jtasks exec run --request-id <stable-id> -- <program> <args>
+jtasks exec run --request-id <stable-id> --shell "<script>"
+```
+
+It binds the command to `JTASKS_TASK_ID`/`JTASKS_ATTEMPT_ID` and their run, uses the current directory, sets no deadline unless `--deadline-ms` is given, and waits up to `--wait-seconds` (default 300). While the receipt says `wait_expired: true`, repeat the same `exec run` call (the same request ID waits for the same command; nothing starts twice) or its `next` call (`jtasks exec wait <handle> --wait-seconds <n>`) in the foreground; an ended receipt carries `exit_code`, `stdout_tail` and `stderr_tail`, and `jtasks exec output <handle> --text` pages the rest. The same request ID returns the same command, also to a later attempt of the task: after a retry, ask again with the same ID instead of starting the work again. jtasks refuses background tool calls and waiting tools (monitors, scheduled wake-ups) in its workers through each agent's own hooks or configuration.
+
+`jtasks exec start --request <command.json>` takes the full request. Its JSON receipt gives the stable command handle. Reuse a stable `request_id` only for an identical request after a lost response or a retried attempt of the same task; choose a new request for a deliberate different command.
 
 Command JSON shape (replace identities and cwd with this actual attempt):
 
@@ -27,8 +36,8 @@ Commands bind to the current task+attempt together, or to an explicit operation.
 
 ```text
 jtasks exec status <handle>
-jtasks exec output <handle> --stream stdout --offset 0 --limit 65536
-jtasks exec output <handle> --stream stderr --offset 0 --limit 65536
+jtasks exec output <handle> --stream stdout --offset 0 --limit 65536 --text
+jtasks exec output <handle> --stream stderr --offset 0 --limit 65536 --text
 jtasks exec wait <handle> --wait-seconds 20
 jtasks exec stop <handle> --reason <specific-reason>
 ```

@@ -10,7 +10,7 @@ from pathlib import Path
 mode=sys.argv[1]
 args=sys.argv[2:]
 prompt=sys.stdin.read()
-Path('seen.json').write_text(json.dumps({'args':args,'prompt':prompt,'cwd':os.getcwd(),'ticket':os.environ.get('JTASKS_TICKET_PATH')}))
+Path('seen.json').write_text(json.dumps({'args':args,'prompt':prompt,'cwd':os.getcwd(),'ticket':os.environ.get('JTASKS_TICKET_PATH'),'data_dir':os.environ.get('JTASKS_DATA_DIR')}))
 schema=json.loads(Path(args[args.index('--output-schema')+1]).read_text())
 final=Path(args[args.index('--output-last-message')+1])
 result={k:v['const'] for k,v in schema['properties'].items() if 'const' in v}
@@ -100,10 +100,29 @@ fn public_cli_launches_codex_with_safe_prompt_exact_identity_and_raw_capture() {
     ] {
         assert!(args.contains(&json!(option)), "missing {option}: {args:?}");
     }
+    // codex exec ends running sessions with the turn (checked on 0.169.0), so
+    // what reaches Codex is the ticket's long-command rule and jtasks exec.
+    let prompt = seen["prompt"].as_str().unwrap();
+    assert!(prompt.contains("## Long commands") && prompt.contains("jtasks exec run"));
+    assert!(prompt.contains("never end your turn to wait for background work"));
+    assert_eq!(
+        fs::canonicalize(seen["data_dir"].as_str().unwrap()).unwrap(),
+        fs::canonicalize(&f.data).unwrap()
+    );
     assert_eq!(args.last().unwrap(), "-");
     let launch: Value =
         serde_json::from_slice(&fs::read(dir.join("codex-launch.json")).unwrap()).unwrap();
     assert_eq!(launch["capabilities"]["direct_execution"], true);
+    assert_eq!(
+        launch["capabilities"]["background_work"],
+        jtasks::executors::codex::BACKGROUND_WORK
+    );
+    assert!(
+        !args
+            .iter()
+            .any(|a| a.as_str().unwrap().contains("unified_exec")),
+        "no ineffective feature override: {args:?}"
+    );
     assert!(
         launch["capabilities"]["effective_configuration"]
             .as_str()

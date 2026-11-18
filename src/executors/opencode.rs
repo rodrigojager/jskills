@@ -191,6 +191,24 @@ fn verify_resume(
     }
 }
 
+/// Attempt subdirectory holding the guard plugin's `server.js`.
+pub const GUARD_PLUGIN_DIRECTORY: &str = "opencode-guard";
+
+/// OPENCODE_CONFIG_CONTENT for a worker: an inherited inline document keeps
+/// its keys and gains the guard plugin; otherwise only the plugin is added.
+pub fn worker_config_content(inherited: Option<&str>, plugin: &Path) -> String {
+    let mut document = inherited
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}));
+    let url = json!(super::guard::file_url(plugin));
+    match document.get_mut("plugins").and_then(Value::as_array_mut) {
+        Some(plugins) => plugins.push(url),
+        None => document["plugins"] = json!([url]),
+    }
+    document.to_string()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn launch(
     workspace: &Workspace,
@@ -271,7 +289,19 @@ pub fn launch(
     if let Some(session) = &resume {
         command.arg("--session").arg(session);
     }
+    // The guard plugin refuses background work; it is added on top of the
+    // user's configuration for this invocation only (read with --standalone).
+    // 2.3.0 loads a configured local plugin only as a directory whose
+    // `server` module it imports ("configured plugin path must be a directory").
+    let plugin = dir.join(GUARD_PLUGIN_DIRECTORY);
+    fs::create_dir_all(&plugin)?;
+    fs::write(plugin.join("server.js"), super::guard::opencode_plugin())?;
+    let config_content = worker_config_content(
+        std::env::var("OPENCODE_CONFIG_CONTENT").ok().as_deref(),
+        &plugin,
+    );
     command
+        .env("OPENCODE_CONFIG_CONTENT", &config_content)
         .current_dir(&workspace.checkout)
         .env("PWD", &workspace.checkout)
         .env("JTASKS_CONTROL_ENDPOINT", endpoint.to_string())
@@ -279,6 +309,7 @@ pub fn launch(
         .env("JTASKS_ATTEMPT_ID", attempt)
         .env("JTASKS_TASK_ID", &task.id)
         .env("JTASKS_TICKET_PATH", ticket)
+        .env("JTASKS_DATA_DIR", &workspace.data)
         .env("JTASKS_BIN", std::env::current_exe()?)
         .stdin(File::open(dir.join("prompt.txt"))?)
         .stdout(File::create(dir.join("stdout.log"))?)
@@ -290,6 +321,7 @@ pub fn launch(
         "capabilities":{"direct_execution":true,"private_server":true,"raw_output_capture":true,
             "structured_native_final":false,"exact_session_resume":true,"result_channel":"scoped_client",
             "permission_asks":if matches!(config.permissions,PermissionMode::Autonomous){"auto-approve unless configured deny"}else{"auto-reject"},
+            "background_work":{"plugin":plugin,"config_content":config_content,"effect":"tool.execute.before refuses background calls and waiting tools, naming jtasks exec; foreground shell timeout raised; run waits for tracked background jobs (background_wait)"},
             "limitations":["native configured deny and managed policies remain enforced", "restricted run is permission denial, not an OS sandbox", "native questions auto-cancel; use scoped blocked reporting", "native helpers use their own policies and are not tracked", "step_finish is a step hint, not a task or session outcome", "session availability check cannot prevent external deletion after export", "account/model access unknown", "Linux deliberately detached sessions escape process-group custody"]}}))?,
     )?;
     crate::execution::custody::OwnedProcess::spawn(&mut command, &dir)

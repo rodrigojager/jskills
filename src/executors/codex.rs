@@ -18,6 +18,13 @@ use std::{
 fn executable() -> String {
     "codex".into()
 }
+/// Checked on 0.169.0 with a scripted turn against a local Responses stand-in
+/// (no model call): a command still running in an `exec_command` session when
+/// the turn ends is ended with `codex exec`, so no background work outlives the
+/// turn and nothing wakes the worker later. `features.unified_exec=false`
+/// changed nothing (the model catalog's `shell_type` decides), so no override
+/// is passed; the ticket's long-command section directs work to `jtasks exec`.
+pub const BACKGROUND_WORK: &str = "codex exec ends running exec_command sessions with the turn (checked on 0.169.0); no background work outlives the turn or wakes the worker; long work goes through jtasks exec";
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -211,6 +218,7 @@ pub fn launch(
         .env("JTASKS_ATTEMPT_ID", attempt)
         .env("JTASKS_TASK_ID", &task.id)
         .env("JTASKS_TICKET_PATH", ticket)
+        .env("JTASKS_DATA_DIR", &workspace.data)
         .env("JTASKS_BIN", std::env::current_exe()?)
         .stdin(File::open(dir.join("prompt.txt"))?)
         .stdout(File::create(dir.join("stdout.log"))?)
@@ -221,6 +229,7 @@ pub fn launch(
             "task_id":task.id,"attempt_id":attempt,"configuration":config,"resume_thread":resumed,
             "capabilities":{"direct_execution":true,"raw_output_capture":true,"native_last_message":true,
             "exact_session_resume":true,"observable_commands":"native output only; not managed command custody",
+            "background_work":BACKGROUND_WORK,
             "permissions":match config.permissions { PermissionMode::Autonomous=>"bypass approvals and sandbox", PermissionMode::Restricted=>"workspace-write, never approve" },
             "effective_configuration":"invocation overrides recorded; native resolved model/account access unknown",
             "limitations":["native helpers are harness-managed", "hook trust may require prior native setup", "batch shims require explicit native or PowerShell executable", "Linux deliberately detached sessions escape process-group custody"]}

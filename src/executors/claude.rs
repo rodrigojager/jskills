@@ -17,7 +17,26 @@ use std::{
 };
 
 pub use super::codex::PermissionMode;
-const BACKGROUND_WAITING_TOOLS: &str = "Monitor,ScheduleWakeup";
+const BACKGROUND_WAITING_TOOLS: &str = "Monitor,ScheduleWakeup,CronCreate";
+/// Per-invocation environment checked against the installed 2.1.327 binary:
+/// no background tasks (Bash/agent run_in_background is unavailable) and a long
+/// foreground Bash timeout, so a build can finish inside one tool call.
+pub const WORKER_ENVIRONMENT: [(&str, &str); 3] = [
+    ("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "1"),
+    ("BASH_DEFAULT_TIMEOUT_MS", "600000"),
+    ("BASH_MAX_TIMEOUT_MS", "3600000"),
+];
+/// Tools the PreToolUse hook inspects; others never reach the hook process.
+const HOOK_MATCHER: &str = "Bash|PowerShell|Agent|Task|Monitor|ScheduleWakeup|CronCreate";
+
+/// `--settings` file for one invocation: a PreToolUse hook that refuses
+/// background calls and waiting tools with a message naming `jtasks exec`.
+/// It adds to the user's own settings and never changes them.
+pub fn worker_settings(binary: &Path) -> Value {
+    json!({"hooks":{"PreToolUse":[{"matcher":HOOK_MATCHER,"hooks":[{
+        "type":"command","command":super::guard::shell_command(binary, "claude"),"timeout":30
+    }]}]}})
+}
 fn executable() -> String {
     "claude".into()
 }
@@ -156,7 +175,14 @@ pub fn launch(
             schema
         ),
     )?;
+    let binary = std::env::current_exe()?;
+    let settings = dir.join("claude-settings.json");
+    fs::write(
+        &settings,
+        serde_json::to_vec_pretty(&worker_settings(&binary))?,
+    )?;
     let mut command = command(config)?;
+    command.envs(WORKER_ENVIRONMENT);
     command
         .args([
             "-p",
@@ -171,6 +197,8 @@ pub fn launch(
             "--disallowed-tools",
             BACKGROUND_WAITING_TOOLS,
         ])
+        .arg("--settings")
+        .arg(&settings)
         .arg("--json-schema")
         .arg(serde_json::to_string(&schema)?);
     for (flag, value) in [
@@ -228,7 +256,8 @@ pub fn launch(
         .env("JTASKS_ATTEMPT_ID", attempt)
         .env("JTASKS_TASK_ID", &task.id)
         .env("JTASKS_TICKET_PATH", ticket)
-        .env("JTASKS_BIN", std::env::current_exe()?)
+        .env("JTASKS_DATA_DIR", &workspace.data)
+        .env("JTASKS_BIN", &binary)
         .stdin(File::open(dir.join("prompt.txt"))?)
         .stdout(File::create(dir.join("stdout.log"))?)
         .stderr(File::create(dir.join("stderr.log"))?);
@@ -238,6 +267,7 @@ pub fn launch(
         "task_id":task.id,"attempt_id":attempt,"configuration":config,"session_id":session,"resumed":resumed,
         "capabilities":{"direct_execution":true,"raw_output_capture":true,"structured_native_final":true,"exact_session_resume":true,
         "permissions":permission,"permission_prompts":"none","provider":config.provider,"disallowed_tools":BACKGROUND_WAITING_TOOLS,
+        "background_work":{"settings":settings,"hook":"PreToolUse refuses run_in_background and waiting tools; names jtasks exec","environment":WORKER_ENVIRONMENT.iter().map(|(k,v)|(k.to_string(),json!(v))).collect::<serde_json::Map<_,_>>()},
         "effective_configuration":"invocation overrides recorded; native init fields observed when supplied; account access unknown",
         "limitations":["native helpers are harness-managed", "native settings/hooks and managed policy still apply", "restricted dontAsk is permission denial, not an OS sandbox", "provider credentials and endpoint configuration remain native", "batch shims require explicit native or PowerShell executable", "Linux deliberately detached sessions escape process-group custody"]}}))?,
     )?;

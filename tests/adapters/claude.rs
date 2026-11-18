@@ -10,7 +10,7 @@ from pathlib import Path
 mode=sys.argv[1]
 args=sys.argv[2:]
 prompt=sys.stdin.read()
-Path('seen.json').write_text(json.dumps({'args':args,'prompt':prompt,'cwd':os.getcwd(),'providers':{k:os.environ.get(k) for k in ['CLAUDE_CODE_USE_BEDROCK','CLAUDE_CODE_USE_VERTEX','CLAUDE_CODE_USE_FOUNDRY']}}))
+Path('seen.json').write_text(json.dumps({'args':args,'prompt':prompt,'cwd':os.getcwd(),'providers':{k:os.environ.get(k) for k in ['CLAUDE_CODE_USE_BEDROCK','CLAUDE_CODE_USE_VERTEX','CLAUDE_CODE_USE_FOUNDRY']},'environment':{k:os.environ.get(k) for k in ['CLAUDE_CODE_DISABLE_BACKGROUND_TASKS','BASH_DEFAULT_TIMEOUT_MS','BASH_MAX_TIMEOUT_MS','JTASKS_DATA_DIR']}}))
 schema=json.loads(args[args.index('--json-schema')+1])
 session=args[args.index('--resume' if '--resume' in args else '--session-id')+1]
 permission=args[args.index('--permission-mode')+1]
@@ -111,7 +111,8 @@ fn public_cli_launches_native_flags_with_literal_stdin_and_preserves_raw_chunks(
     assert!(seen["prompt"].as_str().unwrap().contains("日本語"));
     let prompt = seen["prompt"].as_str().unwrap();
     assert!(prompt.contains("## Long commands") && prompt.contains("jtasks exec wait"));
-    assert!(prompt.contains("Never end your turn to wait for background work"));
+    assert!(prompt.contains("never end your turn to wait for background work"));
+    assert!(prompt.contains("jtasks exec run --request-id"));
     let args = seen["args"].as_array().unwrap();
     for option in [
         "-p",
@@ -128,18 +129,93 @@ fn public_cli_launches_native_flags_with_literal_stdin_and_preserves_raw_chunks(
         "--permission-prompts",
         "none",
         "--disallowed-tools",
-        "Monitor,ScheduleWakeup",
+        "Monitor,ScheduleWakeup,CronCreate",
+        "--settings",
         "--dangerously-skip-permissions",
         "bypassPermissions",
     ] {
         assert!(args.contains(&json!(option)), "missing {option}: {args:?}");
     }
+    background_work_is_refused_by_the_invocation_settings(&f, &seen);
     assert_eq!(seen["providers"]["CLAUDE_CODE_USE_BEDROCK"], "0");
     assert_eq!(seen["providers"]["CLAUDE_CODE_USE_VERTEX"], "0");
     assert_eq!(seen["providers"]["CLAUDE_CODE_USE_FOUNDRY"], "0");
     let custody = read(dir.join("custody.json"));
     assert_eq!(custody["bound"], true);
     assert_eq!(custody["empty"], true);
+}
+
+/// The launch passes a per-invocation settings file whose PreToolUse hook is
+/// this jtasks binary; run that hook on a background Bash call and a waiting
+/// tool and check Claude's native deny decision naming `jtasks exec`.
+fn background_work_is_refused_by_the_invocation_settings(f: &Fixture, seen: &Value) {
+    let args: Vec<&str> = seen["args"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap())
+        .collect();
+    let settings = read(args[args.iter().position(|a| *a == "--settings").unwrap() + 1]);
+    let entry = &settings["hooks"]["PreToolUse"][0];
+    let matcher = entry["matcher"].as_str().unwrap();
+    for tool in ["Bash", "PowerShell", "Agent", "Monitor", "ScheduleWakeup"] {
+        assert!(matcher.split('|').any(|t| t == tool), "{matcher}");
+    }
+    let hook = entry["hooks"][0]["command"].as_str().unwrap();
+    let (quoted, rest) = hook[1..].split_once('"').expect("quoted binary");
+    assert!(hook.starts_with('"') && !quoted.contains('\\'), "{hook}");
+    assert_eq!(
+        fs::canonicalize(quoted).unwrap(),
+        fs::canonicalize(env!("CARGO_BIN_EXE_jtasks")).unwrap()
+    );
+    let hook_args: Vec<&str> = rest.split_whitespace().collect();
+    assert_eq!(hook_args, ["hook", "pre-tool-use", "--agent", "claude"]);
+    let decide = |payload: Value| -> String {
+        use std::io::Write;
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_jtasks"))
+            .args(&hook_args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(payload.to_string().as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap()
+    };
+    for payload in [
+        json!({"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"cargo build","run_in_background":true}}),
+        json!({"hook_event_name":"PreToolUse","tool_name":"ScheduleWakeup","tool_input":{"delaySeconds":600}}),
+    ] {
+        let decision: Value = serde_json::from_str(&decide(payload)).unwrap();
+        let output = &decision["hookSpecificOutput"];
+        assert_eq!(output["hookEventName"], "PreToolUse");
+        assert_eq!(output["permissionDecision"], "deny");
+        assert!(
+            output["permissionDecisionReason"]
+                .as_str()
+                .unwrap()
+                .contains("jtasks exec run")
+        );
+    }
+    // A foreground call proceeds: the hook stays silent.
+    assert_eq!(
+        decide(json!({"tool_name":"Bash","tool_input":{"command":"cargo build","timeout":600000}})),
+        ""
+    );
+    let environment = &seen["environment"];
+    assert_eq!(environment["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"], "1");
+    assert_eq!(environment["BASH_DEFAULT_TIMEOUT_MS"], "600000");
+    assert_eq!(environment["BASH_MAX_TIMEOUT_MS"], "3600000");
+    assert_eq!(
+        fs::canonicalize(environment["JTASKS_DATA_DIR"].as_str().unwrap()).unwrap(),
+        fs::canonicalize(&f.data).unwrap()
+    );
 }
 
 #[test]

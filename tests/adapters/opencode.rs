@@ -18,7 +18,7 @@ if args[0]=='session':
     print(json.dumps({'sessionID':args[-1]}))
     sys.exit(0)
 prompt=sys.stdin.read()
-Path('seen.json').write_text(json.dumps({'args':args,'prompt':prompt,'cwd':os.getcwd(),'pwd':os.environ.get('PWD')}))
+Path('seen.json').write_text(json.dumps({'args':args,'prompt':prompt,'cwd':os.getcwd(),'pwd':os.environ.get('PWD'),'config_content':os.environ.get('OPENCODE_CONFIG_CONTENT'),'data_dir':os.environ.get('JTASKS_DATA_DIR')}))
 session=args[args.index('--session')+1] if '--session' in args else 'ses_exact123'
 def emit(value):
     raw=(json.dumps(value,ensure_ascii=False)+'\n').encode()
@@ -130,6 +130,74 @@ fn public_cli_uses_private_custody_explicit_selection_and_literal_stdin() {
     assert_eq!(read(dir.join("custody.json"))["empty"], true);
     let launch = read(dir.join("opencode-launch.json"));
     assert_eq!(launch["capabilities"]["structured_native_final"], false);
+    assert!(seen["prompt"].as_str().unwrap().contains("jtasks exec run"));
+    assert_eq!(
+        fs::canonicalize(seen["data_dir"].as_str().unwrap()).unwrap(),
+        fs::canonicalize(&f.data).unwrap()
+    );
+    background_work_is_refused_by_the_invocation_plugin(&dir, &seen);
+}
+
+/// OPENCODE_CONFIG_CONTENT names the attempt's guard plugin; load it the way
+/// OpenCode 2.3.0 does (default export, setup(ctx), ctx.tool.hook) and check
+/// that a background shell call and a waiting tool throw an error naming
+/// `jtasks exec`, while a foreground shell call gains a long timeout.
+fn background_work_is_refused_by_the_invocation_plugin(dir: &Path, seen: &Value) {
+    let content: Value = serde_json::from_str(seen["config_content"].as_str().unwrap()).unwrap();
+    let plugin = dir.join(jtasks::executors::opencode::GUARD_PLUGIN_DIRECTORY);
+    assert_eq!(
+        content["plugins"],
+        json!([jtasks::executors::guard::file_url(&plugin)])
+    );
+    let module = jtasks::executors::guard::file_url(&plugin.join("server.js"));
+    let harness = dir.join("guard-harness.mjs");
+    fs::write(
+        &harness,
+        r#"const url = process.argv[2];
+const plugin = (await import(url)).default;
+const hooks = {};
+plugin.setup({ tool: { hook: (name, fn) => { hooks[name] = fn; } } });
+const before = hooks["execute.before"];
+const refused = (event) => { try { before(event); return null; } catch (e) { return e.message; } };
+const foreground = { tool: "shell", input: { command: "cargo build" } };
+before(foreground);
+console.log(JSON.stringify({
+  id: plugin.id,
+  background: refused({ tool: "shell", input: { command: "cargo build", background: true } }),
+  waiting: refused({ tool: "ScheduleWakeup", input: {} }),
+  foreground_timeout: foreground.input.timeout,
+}));
+"#,
+    )
+    .unwrap();
+    let output = match std::process::Command::new("node")
+        .arg(&harness)
+        .arg(&module)
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) => {
+            eprintln!("node unavailable, plugin behavior not exercised: {error}");
+            return;
+        }
+    };
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["id"], "jtasks.worker-guard");
+    for key in ["background", "waiting"] {
+        assert!(
+            result[key].as_str().unwrap().contains("jtasks exec run"),
+            "{result}"
+        );
+    }
+    assert_eq!(
+        result["foreground_timeout"],
+        jtasks::executors::guard::OPENCODE_FOREGROUND_TIMEOUT_MS
+    );
 }
 
 #[test]

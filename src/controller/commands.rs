@@ -84,6 +84,8 @@ pub struct Service {
     workspace: Workspace,
     live: HashMap<String, Owned>,
     shutdown: bool,
+    /// The run a task controller serves; None for standalone `exec serve`.
+    run: Option<String>,
 }
 
 impl Service {
@@ -111,6 +113,7 @@ impl Service {
             workspace: workspace.clone(),
             live: HashMap::new(),
             shutdown: false,
+            run: run.map(str::to_owned),
         };
         let retired = {
             let mut q = store.conn.prepare("SELECT id FROM managed_commands WHERE state IN ('stopped','exited','launch_failed')")?;
@@ -283,8 +286,29 @@ impl Service {
             )
             .optional()?;
         if let Some((id, previous)) = previous {
-            ensure!(previous == serialized, "conflicting command request id");
-            let mut receipt = status(store, &self.data, &id)?;
+            let mut receipt = if previous == serialized {
+                status(store, &self.data, &id)?
+            } else {
+                // A later attempt of the same task asking for the same command
+                // gets the command an earlier attempt started, so a retry
+                // waits for it instead of starting it again.
+                let earlier: CommandSpec = serde_json::from_str(&previous)?;
+                let same_command = earlier.task.is_some()
+                    && earlier.task == spec.task
+                    && CommandSpec {
+                        attempt: spec.attempt.clone(),
+                        ..earlier.clone()
+                    } == spec;
+                ensure!(same_command, "conflicting command request id");
+                let (Some(task), Some(attempt)) = (&spec.task, &spec.attempt) else {
+                    bail!("task and attempt must be supplied together");
+                };
+                let active: bool = store.conn.query_row("SELECT EXISTS(SELECT 1 FROM attempts WHERE id=?1 AND run_id=?2 AND task_id=?3 AND state='running')", [attempt,&spec.run,task], |r|r.get(0))?;
+                ensure!(active, "command requires the current running task attempt");
+                let mut receipt = status(store, &self.data, &id)?;
+                receipt["started_by_attempt"] = json!(earlier.attempt);
+                receipt
+            };
             receipt["duplicate"] = json!(true);
             return Ok(receipt);
         }
@@ -358,6 +382,13 @@ impl Service {
             // are known retired; a live or uncertain scope keeps the hold.
             if retired && !super::recovery::live_commands(&store.conn, &spec.run, task)? {
                 super::admission::release(&self.workspace, &spec.run, task, attempt)?;
+                // Recovery waits while a retired attempt's command lives; now
+                // that the last one ended, the run's own controller makes the
+                // deferred decision (as its next start would), so a retry
+                // can ask for the same command and read its real result.
+                if self.run.as_deref() == Some(spec.run.as_str()) {
+                    super::recovery::reconcile(&self.workspace, store, &spec.run)?;
+                }
             }
         }
         Ok(())

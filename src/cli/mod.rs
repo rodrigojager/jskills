@@ -49,6 +49,7 @@ pub struct Cli {
     #[arg(long, global = true, default_value = ".")]
     pub root: PathBuf,
     /// Runtime data directory; relative paths are relative to the container/checkout.
+    /// `jtasks exec` inside a worker defaults to its run's folder (JTASKS_DATA_DIR).
     #[arg(long, global = true)]
     pub data_dir: Option<PathBuf>,
     #[command(subcommand)]
@@ -154,6 +155,14 @@ pub enum Action {
         #[arg(long)]
         summary: String,
     },
+    /// Native agent hook that refuses background work inside a worker.
+    #[command(hide = true)]
+    Hook {
+        #[arg(value_parser = ["pre-tool-use"])]
+        event: String,
+        #[arg(long, value_parser = ["claude"])]
+        agent: String,
+    },
     /// Deterministic subprocess substitute for focused lifecycle checks.
     Fixture {
         #[arg(long, value_enum)]
@@ -176,6 +185,7 @@ pub fn execute() -> Result<i32> {
         Action::Update(args) => update::execute(args),
         Action::Ask(args) => questions::ask(args),
         Action::Log(args) => activity::log(args),
+        Action::Hook { event: _, agent } => executors::guard::pre_tool_use(&agent),
         Action::Validate { plan } => {
             let plan = load_plan(&plan)?;
             let workspace = Workspace::resolve(&cli.root, cli.data_dir.as_deref())?;
@@ -227,7 +237,14 @@ pub fn execute() -> Result<i32> {
             Ok(0)
         }
         action => {
-            let workspace = Workspace::resolve(&cli.root, cli.data_dir.as_deref())?;
+            // Only managed commands follow a worker's run folder; other nested
+            // calls (a worker's own tests, for example) keep their own default.
+            let data_dir = cli.data_dir.or_else(|| {
+                matches!(action, Action::Exec(_))
+                    .then(|| std::env::var_os("JTASKS_DATA_DIR").map(PathBuf::from))
+                    .flatten()
+            });
+            let workspace = Workspace::resolve(&cli.root, data_dir.as_deref())?;
             match action {
                 Action::Checkpoint(args) => checkpoint::execute(&workspace, args),
                 Action::Clean(args) => clean::execute(&workspace, args),
