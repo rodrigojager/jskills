@@ -162,6 +162,20 @@ pub struct Assessment {
     #[serde(default)]
     pub next_review_after_seconds: Option<u64>,
 }
+
+pub(crate) const EVIDENCE_REFERENCES: &[&str] = &[
+    "task",
+    "elapsed",
+    "activity",
+    "stdout",
+    "stderr",
+    "commands",
+    "process",
+    "diff",
+    "previous_review",
+    "operations",
+];
+
 impl Assessment {
     pub fn validate(&self, policy: &Policy) -> Result<()> {
         ensure!(
@@ -176,22 +190,19 @@ impl Assessment {
             !self.evidence.is_empty() && self.evidence.len() <= 16,
             "review needs bounded evidence references"
         );
-        const REFERENCES: &[&str] = &[
-            "task",
-            "elapsed",
-            "activity",
-            "stdout",
-            "stderr",
-            "commands",
-            "process",
-            "diff",
-            "previous_review",
-            "operations",
-        ];
+        // Older observer prompts allowed the model to annotate the reference.
+        // Only the leading identifier classifies the evidence.
+        let references = self.evidence.iter().map(|entry| {
+            entry
+                .trim()
+                .split(|c: char| c == ':' || c == '(' || c.is_whitespace())
+                .next()
+                .unwrap_or_default()
+        });
         ensure!(
-            self.evidence
-                .iter()
-                .all(|e| REFERENCES.contains(&e.as_str())),
+            references
+                .clone()
+                .all(|reference| EVIDENCE_REFERENCES.contains(&reference)),
             "unknown review evidence reference"
         );
         if self.decision == Decision::Continue {
@@ -201,9 +212,9 @@ impl Assessment {
                 "continue requires a finite positive bounded next_review_after_seconds"
             );
             ensure!(
-                self.evidence
-                    .iter()
-                    .any(|e| !matches!(e.as_str(), "process" | "activity" | "elapsed")),
+                references
+                    .clone()
+                    .any(|reference| !matches!(reference, "process" | "activity" | "elapsed")),
                 "PID, heartbeat or timestamp alone cannot justify extension"
             );
         }

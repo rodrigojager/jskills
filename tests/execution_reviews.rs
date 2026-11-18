@@ -97,8 +97,79 @@ fn optional_estimate_first_review_and_finite_validation() {
         assert!(a.validate(&Policy::default()).is_err());
     }
     a.next_review_after_seconds = Some(1);
-    a.evidence = vec!["process".into()];
+    a.evidence = vec![
+        "process: worker is running".into(),
+        "elapsed: 5400 s".into(),
+    ];
     assert!(a.validate(&Policy::default()).is_err());
+    a.evidence.push("commands c33645eb: bounded wait".into());
+    assert!(a.validate(&Policy::default()).is_ok());
+    a.evidence.push("commands_unknown: unsupported".into());
+    assert!(a.validate(&Policy::default()).is_err());
+}
+
+#[test]
+fn invalid_response_retries_once_under_original_deadline() {
+    for valid_retry in [true, false] {
+        let c = memory(Some(2));
+        let mut invalid = assessment("one", 1, Decision::Continue);
+        invalid.evidence = vec!["unknown".into()];
+        call(&c, "one", 1);
+        reviews::finish_call(
+            &c,
+            &work(1),
+            "one",
+            Some(&invalid),
+            false,
+            10000,
+            4000,
+            "parsed",
+        )
+        .unwrap();
+        let review = reviews::projection(&c, "a").unwrap();
+        assert_eq!(review["state"], "scheduled");
+        assert!(review["action"].is_null());
+        assert_eq!(review["infrastructure_retries"], 0);
+        let detail: String = c
+            .query_row(
+                "SELECT detail FROM reviewer_calls WHERE id='one'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(detail.contains("unknown review evidence reference"));
+        assert_eq!(
+            c.query_row("SELECT state FROM due_work", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "queued"
+        );
+        call(&c, "two", 1);
+        let mut response = assessment("two", 1, Decision::Continue);
+        response.evidence = if valid_retry {
+            vec!["commands c33645eb: bounded wait".into()]
+        } else {
+            invalid.evidence.clone()
+        };
+        reviews::finish_call(
+            &c,
+            &work(1),
+            "two",
+            Some(&response),
+            false,
+            10000,
+            5000,
+            "parsed",
+        )
+        .unwrap();
+        let review = reviews::projection(&c, "a").unwrap();
+        assert_eq!(review["actual_calls"], 2);
+        if valid_retry {
+            assert!(review["action"].is_null());
+            assert_eq!(review["generation"], 2);
+        } else {
+            assert_eq!(review["action"], "pause");
+        }
+    }
 }
 #[test]
 fn actual_failures_share_cap_one_infrastructure_retry_and_original_deadline() {
@@ -492,15 +563,19 @@ fn claude_observer_protocol_is_fresh_bounded_and_retires_without_worker_authorit
     let path = f.root.join("claude-observer.py");
     fs::write(&path, r#"import sys,json,pathlib,os
 args=sys.argv[1:];sys.stdin.read()
-pathlib.Path('claude-observer-args.json').write_text(json.dumps(args))
+args_file=pathlib.Path('claude-observer-args.json')
+first_call=not args_file.exists()
+args_file.write_text(json.dumps(args))
 pathlib.Path('claude-observer-env.json').write_text(json.dumps([k for k in os.environ if k.startswith('JTASKS_')]))
 schema=json.loads(args[args.index('--json-schema')+1]);p=schema['properties'];result={k:p[k]['const'] for k in ['run','task','attempt','review','generation']}
-result.update(decision='continue',rationale='Current capture and diff inspected',evidence=['commands','diff'],delay_cause='Finite extension would permit the check to complete',next_review_after_seconds=1)
+assert 'commands' in p['evidence']['items']['enum']
+references=['unknown'] if first_call else ['commands c33645eb: bounded wait','diff: inspected current changes']
+result.update(decision='continue',rationale='Current capture and diff inspected',evidence=references,delay_cause='Finite extension would permit the check to complete',next_review_after_seconds=1)
 session=args[args.index('--session-id')+1]
 print(json.dumps({'type':'system','subtype':'init','session_id':session,'permissionMode':'dontAsk'}),flush=True)
 print(json.dumps({'type':'result','subtype':'success','session_id':session,'is_error':False,'structured_output':result}),flush=True)
 "#).unwrap();
-    let mut a = configured(&f, "continue", 1);
+    let mut a = configured(&f, "continue", 2);
     a["reviews"]["observer"] =
         json!({"kind":"claude","executable":"python","launcher_args":[path]});
     f.import(json!([
@@ -512,9 +587,13 @@ print(json.dumps({'type':'result','subtype':'success','session_id':session,'is_e
     let status = f.snapshot();
     assert_eq!(
         status["tasks"][0]["attempts"][0]["review"]["actual_calls"],
-        1
+        2
     );
     assert_eq!(status["tasks"][0]["state"], "needs_intervention");
+    assert_eq!(
+        status["tasks"][0]["attempts"][0]["review"]["reason"],
+        "last allowed observer call requested more time"
+    );
     assert_eq!(status["tasks"][1]["state"], "completed");
     let args: Vec<String> =
         serde_json::from_slice(&fs::read(f.root.join("claude-observer-args.json")).unwrap())
@@ -532,8 +611,20 @@ print(json.dumps({'type':'result','subtype':'success','session_id':session,'is_e
     );
     let c = db(&f);
     let id: String = c
-        .query_row("SELECT id FROM reviewer_calls", [], |r| r.get(0))
+        .query_row(
+            "SELECT id FROM reviewer_calls WHERE state='finished'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
+    let deadline_count: u32 = c
+        .query_row(
+            "SELECT COUNT(DISTINCT deadline_ms) FROM reviewer_calls",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(deadline_count, 1);
     let dir = f.data.join("reviews").join(id);
     let custody: Value =
         serde_json::from_slice(&fs::read(dir.join("custody.json")).unwrap()).unwrap();

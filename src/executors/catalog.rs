@@ -941,12 +941,17 @@ pub fn validate_values(
         e.validate()?;
     }
     let executable = values["executable"].as_str().unwrap_or(executor);
-    let launcher_args: Vec<String> =
-        serde_json::from_value(values.get("launcher_args").cloned().unwrap_or(json!([])))?;
+    let launcher_args: Option<Vec<String>> =
+        serde_json::from_value(values["launcher_args"].clone()).context("invalid launcher_args")?;
     let snapshot = read(
         workspace,
         executor,
-        &scope(workspace, executable, &launcher_args, configuration),
+        &scope(
+            workspace,
+            executable,
+            launcher_args.as_deref().unwrap_or_default(),
+            configuration,
+        ),
     )?;
     if let Some(catalog) = &snapshot
         && (matches!(catalog.source, Source::ExplicitSnapshot) || now() < catalog.expires_at())

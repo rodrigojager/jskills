@@ -269,3 +269,44 @@ fn one_observer_alias_can_switch_between_native_agents() {
         assert_eq!(change["changed"]["new"]["effort"], variant);
     }
 }
+
+#[test]
+fn configure_updates_codex_aliases_with_null_launcher_args() {
+    let f = prepared();
+    for (alias, effort) in [("standard", "medium"), ("deep", "high")] {
+        set_alias(
+            &f,
+            alias,
+            json!({
+                "executor":"codex","provider":"openai","model":"previous-model",
+                "launcher_args":null
+            }),
+        );
+        let change = success(
+            &f,
+            &["configure", "--set", alias, "--model", "gpt-6.2-sol", "--effort", effort],
+        );
+        assert_eq!(change["changed"]["new"]["model"], "gpt-6.2-sol");
+        assert_eq!(change["changed"]["new"]["effort"], effort);
+    }
+}
+
+#[test]
+fn catalog_treats_null_launcher_args_as_default() {
+    use jtasks::executors::catalog::{UnknownException, validate_values};
+
+    let f = Fixture::new();
+    let workspace = jtasks::storage::Workspace::resolve(&f.root, Some(&f.data)).unwrap();
+    let exception = UnknownException {
+        actor: "test".into(),
+        reason: "Isolated fixture without a catalog".into(),
+    };
+    for launcher_args in [Value::Null, json!([]), json!(["--test"])] {
+        let values = json!({"model":"test-model","launcher_args":launcher_args});
+        assert!(validate_values(&workspace, "codex", &values, "native-default", Some(&exception)).is_ok());
+    }
+    let values = json!({"model":"test-model","launcher_args":"--test"});
+    let error = validate_values(&workspace, "codex", &values, "native-default", Some(&exception))
+        .unwrap_err();
+    assert_eq!(error.to_string(), "invalid launcher_args");
+}

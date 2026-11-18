@@ -412,7 +412,7 @@ impl Service {
                     &store.conn,
                     work,
                     "pause",
-                    "review infrastructure retry deadline exhausted",
+                    "observer retry deadline exhausted",
                 )?;
                 continue;
             }
@@ -799,15 +799,22 @@ pub fn finish_call(
         return Ok(());
     }
     let policy = policy(&tx, work.attempt.as_deref().unwrap())?;
-    let valid = assessment.filter(|a| {
+    let binding_matches = assessment.is_none_or(|a| {
         a.run == work.run
             && Some(&a.task) == work.task.as_ref()
             && Some(&a.attempt) == work.attempt.as_ref()
             && a.review == id
             && a.generation == work.generation
-            && a.validate(&policy).is_ok()
-            && now_ms <= deadline_ms
     });
+    let within_deadline = now_ms <= deadline_ms;
+    let validation = assessment.map(|a| a.validate(&policy)).transpose();
+    let detail = match &validation {
+        _ if !binding_matches => "observer assessment identity mismatch".into(),
+        _ if !within_deadline => "observer assessment deadline elapsed".into(),
+        Err(error) => format!("{detail}: {error:#}"),
+        _ => detail.to_owned(),
+    };
+    let valid = assessment.filter(|_| binding_matches && within_deadline && validation.is_ok());
     tx.execute(
         "UPDATE reviewer_calls SET state=?2,response=?3,detail=?4 WHERE id=?1",
         params![
@@ -864,12 +871,18 @@ pub fn finish_call(
             [&work.attempt],
             |r| r.get(0),
         )?;
-        if infrastructure_failure
-            && retried == 0
+        let failed_in_generation: u32 = tx.query_row(
+            "SELECT COUNT(*) FROM reviewer_calls WHERE attempt_id=?1 AND generation=?2 AND state='failed' AND invoked=1",
+            params![work.attempt, work.generation],
+            |r| r.get(0),
+        )?;
+        if binding_matches
+            && failed_in_generation == 1
+            && (!infrastructure_failure || retried == 0)
             && count < policy.max_calls
             && now_ms < deadline_ms
         {
-            tx.execute("UPDATE execution_reviews SET infrastructure_retries=infrastructure_retries+1,state='scheduled' WHERE attempt_id=?1",[&work.attempt])?;
+            tx.execute("UPDATE execution_reviews SET infrastructure_retries=infrastructure_retries+?2,state='scheduled' WHERE attempt_id=?1",params![work.attempt,u32::from(infrastructure_failure)])?;
             // Same generation/group deadline; schedule requires generation advance,
             // so requeue this already-admitted immutable work explicitly.
             tx.execute("UPDATE due_work SET state='queued',queued_ms=?2,admitted_ms=NULL WHERE id=?1 AND generation=?3",params![work.id,i64::try_from(now_ms)?,work.generation])?;
@@ -878,7 +891,7 @@ pub fn finish_call(
                 &tx,
                 work,
                 "pause",
-                "observer failed, invalid, late or infrastructure allowance exhausted",
+                &format!("observer review stopped: {detail}"),
             )?;
         }
     }
@@ -980,7 +993,7 @@ fn evidence(workspace: &Workspace, conn: &Connection, work: &Work) -> Result<Val
 
 fn schema(work: &Work, id: &str) -> Value {
     json!({"type":"object","additionalProperties":false,"properties":{
-        "run":{"type":"string","const":work.run},"task":{"type":"string","const":work.task},"attempt":{"type":"string","const":work.attempt},"review":{"type":"string","const":id},"generation":{"type":"integer","const":work.generation},"decision":{"type":"string","enum":["continue","retry","inconclusive"]},"rationale":{"type":"string"},"evidence":{"type":"array","items":{"type":"string"}},"delay_cause":{"type":"string"},"next_review_after_seconds":{"type":["integer","null"]}},"required":["run","task","attempt","review","generation","decision","rationale","evidence","delay_cause","next_review_after_seconds"]})
+        "run":{"type":"string","const":work.run},"task":{"type":"string","const":work.task},"attempt":{"type":"string","const":work.attempt},"review":{"type":"string","const":id},"generation":{"type":"integer","const":work.generation},"decision":{"type":"string","enum":["continue","retry","inconclusive"]},"rationale":{"type":"string"},"evidence":{"type":"array","items":{"type":"string","enum":crate::domain::reviews::EVIDENCE_REFERENCES}},"delay_cause":{"type":"string"},"next_review_after_seconds":{"type":["integer","null"]}},"required":["run","task","attempt","review","generation","decision","rationale","evidence","delay_cause","next_review_after_seconds"]})
 }
 
 fn launch_snapshot(workspace: &Workspace, dir: &Path) -> Result<OwnedProcess> {
@@ -1025,7 +1038,7 @@ fn launch(
     evidence["diff"]["capture_limit_bytes"] = json!(MAX_EVIDENCE_BYTES);
     fs::write(dir.join("evidence.json"), serde_json::to_vec(&evidence)?)?;
     let prompt = format!(
-        "You are a fresh execution observer, never a developer or completion checker. Read the immutable evidence below. Do not edit source, run tools, release resources, report task completion, or launch replacements. Compare previous_review with current evidence. A PID, heartbeat, timestamp, repeated old diff or unsupported worker claim alone is not progress. Consider the chosen operation schedule and plausible delay cause. Return continue with a justified finite interval, retry for normal stop-before-replace, or inconclusive. Native read-only/tool denial is not a universal OS security boundary. Do not claim unavailable evidence.\nEvidence references are task, elapsed, activity, stdout, stderr, commands, process, diff, previous_review, operations.\nEVIDENCE:\n{}\nRESPONSE SCHEMA:\n{}\n",
+        "You are a fresh execution observer, never a developer or completion checker. Read the immutable evidence below. Do not edit source, run tools, release resources, report task completion, or launch replacements. Compare previous_review with current evidence. A PID, heartbeat, timestamp, repeated old diff or unsupported worker claim alone is not progress. Consider the chosen operation schedule and plausible delay cause. Return continue with a justified finite interval, retry for normal stop-before-replace, or inconclusive. Native read-only/tool denial is not a universal OS security boundary. Do not claim unavailable evidence.\nUse only the evidence identifiers enumerated in the response schema. Explain the evidence in rationale.\nEVIDENCE:\n{}\nRESPONSE SCHEMA:\n{}\n",
         evidence, schema
     );
     fs::write(dir.join("prompt.txt"), prompt)?;
