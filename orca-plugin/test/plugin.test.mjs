@@ -11,7 +11,7 @@ import {execute} from '../src/process.mjs';
 
 const base=process.env.JTASKS_PLUGIN_TEST_DIR || fileURLToPath(new URL('../../../_work/00-tmp/orca-tests/',import.meta.url));
 async function fixture(){const root=path.join(base,randomUUID());await mkdir(root,{recursive:true});return root;}
-const version='0.1.0';
+const {version}=JSON.parse(await readFile(new URL('../orca-plugin.json',import.meta.url),'utf8'));
 const fakeRun=async(file,args)=>({code:0,stdout:args[0]==='--version'?`jtasks ${version}`:'progress errors --revision --task --data-dir',stderr:''});
 const nativeName=process.platform==='win32'?'jtasks.exe':'jtasks';
 async function bundle(){const root=await fixture();await writeFile(path.join(root,nativeName),'test native binary');await writeFile(path.join(root,'runtime.json'),JSON.stringify({cliVersion:version,artifacts:{[`${process.platform}-${process.arch}`]:{file:nativeName,sha256:digest(await readFile(path.join(root,nativeName)))}}}));return root;}
@@ -20,10 +20,12 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
 
 test('worker caches automatic update checks, manual checks revalidate and settings revoke offers',async()=>{
   const h=host();let checks=0,changed,finish;
+  const [major,minor,patch]=version.split('.').map(Number);
+  const latest=`${major}.${minor}.${patch+1}`;
   let config={updateRepository:'example/jtasks',checkUpdates:true};
   h.orca.settings.get=async()=>config;h.orca.settings.onDidChange=fn=>{changed=fn;return {dispose(){}};};
   const service=createService(h.orca,{runtime:{ensure:async()=>({executable:'native',version})},updates:{
-    async check(repository){checks++;if(finish===false)await new Promise(resolve=>{finish=resolve;});return {state:'checked',repository,current:version,latest:'0.1.1',available:true,checkedAt:Date.now(),token:'offer'};},
+    async check(repository){checks++;if(finish===false)await new Promise(resolve=>{finish=resolve;});return {state:'checked',repository,current:version,latest,available:true,checkedAt:Date.now(),token:'offer'};},
     apply:async token=>({token}),invalidate(){}
   }});
   const call=h.handlers['updates.check'];

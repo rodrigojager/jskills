@@ -47,6 +47,7 @@ pub struct Task {
     pub title: String,
     #[serde(default, alias = "dependsOn")]
     pub depends_on: Vec<String>,
+    #[serde(deserialize_with = "crate::domain::profiles::deserialize_selection")]
     pub executor: Executor,
     #[serde(default)]
     pub context: crate::domain::tickets::TicketContext,

@@ -29,13 +29,13 @@ pub struct Configure {
     /// Models and efforts offered for an agent.
     #[arg(long, value_name = "EXECUTOR")]
     pub choices: Option<String>,
-    #[arg(long)]
+    #[arg(long, visible_alias = "agent")]
     pub executor: Option<String>,
     #[arg(long)]
     pub provider: Option<String>,
     #[arg(long)]
     pub model: Option<String>,
-    #[arg(long)]
+    #[arg(long, visible_alias = "variant")]
     pub effort: Option<String>,
     /// Who made the change, recorded in the journal.
     #[arg(long)]
@@ -54,7 +54,8 @@ fn efforts(executor: &str) -> &'static [&'static str] {
 }
 
 fn fixed_view(configuration: &ProfileConfig) -> Value {
-    json!({"executor":configuration.executor,"provider":configuration.provider,"model":configuration.model,"effort":configuration.effort})
+    json!({"executor":configuration.executor,"provider":configuration.provider,"model":configuration.model,
+        "effort":configuration.effort.as_ref().or(configuration.variant.as_ref()),"variant":configuration.variant})
 }
 
 /// Aliases named by the run's tasks (role tasks) and observers, in plan order.
@@ -92,7 +93,10 @@ pub fn list(workspace: &Workspace, run: &str) -> Result<Value> {
             if !order.contains(&key) {
                 order.push(key.clone());
             }
-            tasks.entry(key).or_default().push((id.clone(), state.clone()));
+            tasks
+                .entry(key)
+                .or_default()
+                .push((id.clone(), state.clone()));
         }
     }
     let known = profiles::aliases(workspace)?;
@@ -132,17 +136,38 @@ pub fn choices(workspace: &Workspace, executor: &str) -> Result<Value> {
     catalog::name(executor)?;
     let mut models: Vec<String> = vec![];
     let mut in_use: Vec<String> = vec![];
+    let mut model_options = vec![];
+    let mut providers = vec![];
+    let mut effort_options = vec![];
     let available = match catalogue(workspace, executor)? {
         Some(snapshot) if snapshot.observed_at != 0 => {
             for choice in snapshot.choices.iter().filter(|c| c.field == "model") {
                 if !models.contains(&choice.value) {
                     models.push(choice.value.clone());
                 }
+                model_options.push(json!({"provider":choice.provider,"model":choice.value}));
             }
+            providers.extend(
+                snapshot
+                    .choices
+                    .iter()
+                    .filter(|c| c.field == "provider")
+                    .map(|c| c.value.clone()),
+            );
+            effort_options.extend(
+                snapshot
+                    .choices
+                    .iter()
+                    .filter(|c| c.field == "effort")
+                    .map(|c| json!({"provider":c.provider,"model":c.model,"effort":c.value})),
+            );
             true
         }
         _ => false,
     };
+    if executor == "claude" {
+        providers.extend(["anthropic", "bedrock", "vertex", "foundry"].map(str::to_string));
+    }
     for (config, _) in profiles::aliases(workspace)?.values() {
         if config.executor.as_deref() == Some(executor) {
             if let Some(model) = &config.model {
@@ -152,8 +177,10 @@ pub fn choices(workspace: &Workspace, executor: &str) -> Result<Value> {
             }
         }
     }
-    Ok(json!({"executor":executor,"catalogue":if available {"available"} else {"unavailable"},
-        "models":models,"in_use":in_use,"efforts":efforts(executor),"free_text":!available}))
+    Ok(
+        json!({"executor":executor,"catalogue":if available {"available"} else {"unavailable"},
+        "models":models,"model_options":model_options,"providers":providers,"in_use":in_use,"efforts":efforts(executor),"effort_options":effort_options,"free_text":!available || models.is_empty()}),
+    )
 }
 
 struct Change {
@@ -182,29 +209,42 @@ fn prepare(
             new.variant = None;
             new.native_profile = None;
             new.native_agent = None;
-            if executor == "opencode" {
-                new.effort = None;
-            }
+            new.effort = None;
+            new.provider = None;
+            new.model = None;
+            new.executable = None;
+            new.launcher_args = None;
         }
         new.executor = Some(executor);
     }
-    if provider.is_some() {
-        new.provider = provider;
+    if let Some(provider) = provider {
+        new.provider = (provider != "native-default").then_some(provider);
     }
     if model.is_some() {
         new.model = model;
     }
-    if effort.is_some() {
-        new.effort = effort;
+    if let Some(effort) = effort {
+        new.effort = (effort != "native-default").then_some(effort);
+        new.variant = None;
     }
     profiles::validate(&new)?;
-    let values = serde_json::to_value(&new)?;
+    ensure!(new.model.is_some(), "select a model for the agent");
+    let mut values = profiles::executor_value(&new)?;
+    if let Some(effort) = values.get("reasoning_effort").cloned() {
+        values["effort"] = effort;
+    }
     let executor = new.executor.clone().context("alias has no executor")?;
     let exception = catalog::UnknownException {
         actor: actor.into(),
         reason: "set through jtasks configure".into(),
     };
-    catalog::validate_values(workspace, &executor, &values, "native-default", Some(&exception))?;
+    catalog::validate_values(
+        workspace,
+        &executor,
+        &values,
+        "native-default",
+        Some(&exception),
+    )?;
     Ok(Change {
         alias: alias.into(),
         old,
@@ -283,7 +323,13 @@ pub fn execute(workspace: &Workspace, args: Configure) -> Result<i32> {
         println!("{}", list(workspace, &run)?);
         return Ok(0);
     }
-    menu(workspace, &run, &actor, &mut io::stdin().lock(), &mut io::stdout())
+    menu(
+        workspace,
+        &run,
+        &actor,
+        &mut io::stdin().lock(),
+        &mut io::stdout(),
+    )
 }
 
 /// One answer; `None` means cancel (end of input, Esc or an empty answer).
@@ -343,10 +389,6 @@ fn menu(
     let Some(alias) = alias else {
         bail!("unknown alias {answer}");
     };
-    let current = profiles::aliases(workspace)?
-        .remove(alias)
-        .map(|c| c.0)
-        .context("alias is not defined")?;
     let Some(executor) = ask(input, out, "Agent (claude, codex, opencode):")? else {
         return cancelled(out);
     };
@@ -368,22 +410,24 @@ fn menu(
         return cancelled(out);
     };
     writeln!(out, "Efforts: {}", efforts(&executor).join(", "))?;
-    let effort = if efforts(&executor).is_empty() {
-        None
+    let level_prompt = if executor == "opencode" {
+        "Variant (or native-default):"
     } else {
-        match ask(input, out, "Effort:")? {
-            Some(effort) => Some(effort),
-            None => return cancelled(out),
-        }
+        "Effort (or native-default):"
     };
-    let provider = current.provider.is_none().then(|| "default".to_string());
+    let Some(effort) = ask(input, out, level_prompt)? else {
+        return cancelled(out);
+    };
+    let Some(provider) = ask(input, out, "Provider (or native-default):")? else {
+        return cancelled(out);
+    };
     let change = prepare(
         workspace,
         alias,
         Some(executor),
-        provider,
+        Some(provider),
         Some(model),
-        effort,
+        Some(effort),
         actor,
     )?;
     writeln!(

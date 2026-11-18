@@ -227,7 +227,7 @@ fn alias_spec(c: &Composition) {
     c.edit_spec(|s| {
         s["executors"] = serde_json::json!({
             "deep": {"kind": "claude", "provider": "anthropic", "model": "claude-opus-5-5", "effort": "high"},
-            "standard": {"kind": "claude", "provider": "anthropic", "model": "claude-sonnet-5-5", "effort": "medium"},
+            "standard": {"agent": "claude", "provider": "anthropic", "model": "claude-sonnet-5-5", "effort": "medium"},
             "observer": {"kind": "claude", "provider": "anthropic", "model": "claude-haiku-5-5"}
         });
         s["unknown_capabilities"] = serde_json::json!({"actor": "test", "reason": "no account in tests"});
@@ -291,7 +291,7 @@ fn aliases_false_keeps_direct_executors() {
     assert!(output.status.success(), "{}", text(&output));
     assert!(!c.output.with_file_name("example.profiles.json").exists());
     let intent: Value = serde_json::from_slice(&fs::read(&c.output).unwrap()).unwrap();
-    assert_eq!(intent["tasks"][0]["executor"]["kind"], "claude");
+    assert_eq!(intent["tasks"][0]["executor"]["agent"], "claude");
     assert_eq!(intent["tasks"][0]["executor"]["model"], "claude-sonnet-5-5");
     assert_eq!(intent["tasks"][0]["reviews"]["observer"]["model"], "claude-haiku-5-5");
 }

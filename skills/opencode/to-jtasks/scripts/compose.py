@@ -21,7 +21,7 @@ SPEC_KEYS = set(INTENT_KEYS) | {"compose_version", "plan", "output", "vars", "re
 TEMPLATE_KEYS = {"title", "executor", "requirements", "use_cases", "depends_on", "admission", "context", "lookups",
                  "vars", "tags", "recovery", "reviews", "estimate_seconds", "catalog_scope", "unknown_capabilities"}
 PROFILE_KINDS = ("claude", "codex", "opencode")
-PROFILE_FIELDS = ("provider", "model", "effort", "variant", "native_profile", "native_agent", "autonomy",
+PROFILE_FIELDS = ("provider", "model", "effort", "reasoning_effort", "variant", "native_profile", "native_agent", "autonomy",
                   "executable", "launcher_args", "prompt")
 EDGE_KINDS = ("operation", "task_candidate", "task_completed")
 
@@ -478,12 +478,13 @@ def compose(spec, spec_path, output):
         """A named executor: an alias reference by default, the direct executor with "aliases": false."""
         require(name in executors, f"{where}: unknown executor '{name}'")
         direct = executors[name]
-        convertible = (aliases and isinstance(direct, dict) and direct.get("kind") in PROFILE_KINDS
-                       and set(direct) <= {"kind", *PROFILE_FIELDS})
+        agent_key = "agent" if isinstance(direct, dict) and "agent" in direct else "kind"
+        convertible = (aliases and isinstance(direct, dict) and direct.get(agent_key) in PROFILE_KINDS
+                       and set(direct) <= {agent_key, *PROFILE_FIELDS})
         if not convertible:
             return direct
         require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name), f"{where}: '{name}' is not a plain alias name")
-        profiles[name] = {"executor": direct["kind"], **{k: direct[k] for k in PROFILE_FIELDS if k in direct}}
+        profiles[name] = {"executor": direct[agent_key], **{k: direct[k] for k in PROFILE_FIELDS if k in direct}}
         return {"kind": "profile", "alias": name}
 
     tasks, tags = [], {}
@@ -614,7 +615,8 @@ def summary(intent):
     executors = {}
     for task in tasks:
         executor = task["executor"]
-        label = " ".join(str(executor[k]) for k in ("kind", "alias", "model", "effort") if executor.get(k))
+        label = " ".join(str(executor[k]) for k in ("agent", "kind", "alias", "provider", "model",
+                                                      "effort", "reasoning_effort", "variant") if executor.get(k))
         executors[label] = executors.get(label, 0) + 1
     lines = [f"tasks={len(tasks)} operations={len(intent.get('operations', []))} "
              f"requirements={len(intent.get('requirements', []))} "

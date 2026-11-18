@@ -15,9 +15,11 @@ use std::{
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ProfileConfig {
+    #[serde(alias = "agent")]
     pub executor: Option<String>,
     pub provider: Option<String>,
     pub model: Option<String>,
+    #[serde(alias = "reasoning_effort")]
     pub effort: Option<String>,
     pub variant: Option<String>,
     pub native_profile: Option<String>,
@@ -26,6 +28,78 @@ pub struct ProfileConfig {
     pub executable: Option<String>,
     pub launcher_args: Option<Vec<String>>,
     pub prompt: Option<String>,
+}
+
+pub(crate) fn deserialize_selection<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let value = Value::deserialize(deserializer)?;
+    decode_selection(value).map_err(serde::de::Error::custom)
+}
+
+pub(crate) fn deserialize_optional_selection<'de, D, T>(
+    deserializer: D,
+) -> std::result::Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    Option::<Value>::deserialize(deserializer)?
+        .map(decode_selection)
+        .transpose()
+        .map_err(serde::de::Error::custom)
+}
+
+fn decode_selection<T: serde::de::DeserializeOwned>(mut value: Value) -> Result<T> {
+    if value.get("agent").is_some() {
+        let config: ProfileConfig = serde_json::from_value(value)?;
+        ensure!(config.model.is_some(), "agent selection requires a model");
+        value = executor_value(&config)?;
+    }
+    Ok(serde_json::from_value(value)?)
+}
+
+pub(crate) fn view_selection(
+    values: &mut Value,
+    origins: &mut BTreeMap<String, String>,
+    native: &Value,
+) {
+    let Some(agent @ ("claude" | "codex" | "opencode")) = native["kind"].as_str() else {
+        return;
+    };
+    let effort_field = match agent {
+        "codex" => "reasoning_effort",
+        "opencode" => "variant",
+        _ => "effort",
+    };
+    let values = values.as_object_mut().expect("effective selection object");
+    values.insert("agent".into(), json!(agent));
+    for (common, field) in [
+        ("effort", effort_field),
+        ("provider", "provider"),
+        ("model", "model"),
+    ] {
+        if let Some(value) = native.get(field).filter(|value| !value.is_null()) {
+            values.insert(common.into(), value.clone());
+            let origin = origins
+                .get(common)
+                .or_else(|| origins.get(field))
+                .or_else(|| origins.get("model"))
+                .cloned();
+            if let Some(origin) = origin {
+                origins.insert(common.into(), origin);
+            }
+        }
+    }
+    if let Some(origin) = origins
+        .get("executor")
+        .or_else(|| origins.get("kind"))
+        .cloned()
+    {
+        origins.insert("agent".into(), origin);
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -155,6 +229,35 @@ pub fn effective(
         (overrides, "task"),
     ] {
         validate(config)?;
+        if let (Some(previous), Some(selected)) = (
+            values.get("executor").and_then(Value::as_str),
+            config.executor.as_deref(),
+        ) {
+            if previous != selected {
+                for key in [
+                    "provider",
+                    "model",
+                    "effort",
+                    "variant",
+                    "native_profile",
+                    "native_agent",
+                    "executable",
+                    "launcher_args",
+                ] {
+                    values.remove(key);
+                    origins.remove(key);
+                }
+            }
+        }
+        let replaced_effort = match (config.effort.is_some(), config.variant.is_some()) {
+            (true, false) => Some("variant"),
+            (false, true) => Some("effort"),
+            _ => None,
+        };
+        if let Some(field) = replaced_effort {
+            values.remove(field);
+            origins.remove(field);
+        }
         for (key, value) in serde_json::to_value(config)?.as_object().unwrap() {
             if !value.is_null() {
                 values.insert(key.clone(), value.clone());
@@ -172,7 +275,7 @@ pub fn effective(
         values.insert("native_agent".into(), json!("build"));
         origins.insert("native_agent".into(), "supported_default".into());
     }
-    let missing: Vec<_> = ["executor", "provider", "model"]
+    let missing: Vec<_> = ["executor", "model"]
         .into_iter()
         .filter(|key| !values.contains_key(*key))
         .collect();
@@ -254,25 +357,30 @@ pub fn resolve(
                 .as_ref()
                 .and_then(|v| v.catalog.as_ref())
                 .map(|c| format!("{}:{}:{}", c.executor, c.scope.configuration, c.observed_at));
-            return Ok((
-                task.clone(),
-                EffectiveProfile {
-                    alias: None,
-                    values,
-                    origins,
-                    executor_version: version,
-                    catalog_reference: reference,
-                    discovery: "explicit_executor; native defaults/access not discovered".into(),
-                    catalog_validation: validation,
-                },
-            ));
+            let native = values.clone();
+            view_selection(&mut values, &mut origins, &native);
+            let effective = EffectiveProfile {
+                alias: None,
+                values,
+                origins,
+                executor_version: version,
+                catalog_reference: reference,
+                discovery: "explicit_executor; native defaults/access not discovered".into(),
+                catalog_validation: validation,
+            };
+            return Ok((task.clone(), effective));
         }
     };
     let mut snapshot = effective(workspace, alias, overrides, defaults)?;
     let config: ProfileConfig = serde_json::from_value(snapshot.values.clone())?;
     let mut task = task.clone();
-    task.executor = serde_json::from_value(executor_value(&config)?)?;
-    let validation = crate::executors::catalog::annotate(workspace, &task, &snapshot.values)?;
+    let native = executor_value(&config)?;
+    task.executor = serde_json::from_value(native.clone())?;
+    let validation = crate::executors::catalog::annotate(
+        workspace,
+        &task,
+        &serde_json::to_value(&task.executor)?,
+    )?;
     snapshot.executor_version = validation
         .catalog
         .as_ref()
@@ -283,6 +391,7 @@ pub fn resolve(
         .map(|c| format!("{}:{}:{}", c.executor, c.scope.configuration, c.observed_at));
     snapshot.discovery = validation.state.clone();
     snapshot.catalog_validation = Some(validation);
+    view_selection(&mut snapshot.values, &mut snapshot.origins, &native);
     Ok((task, snapshot))
 }
 
@@ -294,7 +403,7 @@ pub fn resolve_observer(
     overrides: &ProfileConfig,
     defaults: &ProfileConfig,
 ) -> Result<(Value, EffectiveProfile)> {
-    let snapshot = effective(workspace, alias, overrides, defaults)?;
+    let mut snapshot = effective(workspace, alias, overrides, defaults)?;
     let config: ProfileConfig = serde_json::from_value(snapshot.values.clone())?;
     let executor = config.executor.as_deref().unwrap_or_default();
     ensure!(
@@ -302,11 +411,20 @@ pub fn resolve_observer(
         "execution observer alias {alias} resolves to executor {executor}, which the observer does not support (supported: {})",
         crate::domain::reviews::OBSERVER_EXECUTORS.join(", ")
     );
-    Ok((executor_value(&config)?, snapshot))
+    let native = executor_value(&config)?;
+    view_selection(&mut snapshot.values, &mut snapshot.origins, &native);
+    Ok((native, snapshot))
 }
 
 /// The native executor JSON that effective alias values launch.
-fn executor_value(config: &ProfileConfig) -> Result<Value> {
+pub(crate) fn executor_value(config: &ProfileConfig) -> Result<Value> {
+    validate(config)?;
+    let choice = match (&config.effort, &config.variant) {
+        (Some(effort), Some(variant)) if effort != variant => {
+            bail!("effort and variant differ; select one")
+        }
+        (effort, variant) => effort.as_ref().or(variant.as_ref()),
+    };
     ensure!(
         matches!(
             config.executor.as_deref(),
@@ -317,24 +435,34 @@ fn executor_value(config: &ProfileConfig) -> Result<Value> {
     );
     let mut value = if config.executor.as_deref() == Some("opencode") {
         ensure!(
-            config.effort.is_none() && config.native_profile.is_none(),
-            "OpenCode adapter does not support effort/native_profile; use variant/native_agent"
+            config.native_profile.is_none(),
+            "OpenCode adapter requires native_agent instead of native_profile"
         );
-        json!({"kind":"opencode","provider":config.provider,"model":config.model,"variant":config.variant,
-            "native_agent":config.native_agent,"permissions":config.autonomy})
+        let model = config
+            .model
+            .as_deref()
+            .context("OpenCode requires a model")?;
+        let (provider, model) = match &config.provider {
+            Some(provider) => (provider.as_str(), model),
+            None => model
+                .split_once('/')
+                .context("OpenCode requires provider or a provider/model selector")?,
+        };
+        json!({"kind":"opencode","provider":provider,"model":model,"variant":choice,
+            "native_agent":config.native_agent.as_deref().unwrap_or("build"),"permissions":config.autonomy.as_deref().unwrap_or("autonomous")})
     } else if config.executor.as_deref() == Some("claude") {
         ensure!(
-            config.variant.is_none() && config.native_profile.is_none(),
-            "Claude adapter does not support variant/native_profile; use native_agent for a native Claude agent"
+            config.native_profile.is_none(),
+            "Claude adapter requires native_agent instead of native_profile"
         );
-        json!({"kind":"claude","model":config.model,"provider":config.provider,"effort":config.effort,
-            "native_agent":config.native_agent,"permissions":config.autonomy})
+        json!({"kind":"claude","model":config.model,"provider":config.provider,"effort":choice,
+            "native_agent":config.native_agent,"permissions":config.autonomy.as_deref().unwrap_or("autonomous")})
     } else {
         ensure!(
-            config.variant.is_none() && config.native_agent.is_none(),
-            "Codex adapter does not support variant/native_agent; use native_profile for a native Codex profile"
+            config.native_agent.is_none(),
+            "Codex adapter requires native_profile instead of native_agent"
         );
-        json!({"kind":"codex", "model":config.model,"provider":config.provider,"reasoning_effort":config.effort,"native_profile":config.native_profile,"permissions":config.autonomy})
+        json!({"kind":"codex", "model":config.model,"provider":config.provider,"reasoning_effort":choice,"native_profile":config.native_profile,"permissions":config.autonomy.as_deref().unwrap_or("autonomous")})
     };
     for (key, item) in [
         ("executable", config.executable.clone().map(Value::String)),

@@ -187,55 +187,61 @@ fn observer_alias_resolves_when_each_review_is_due_and_is_journaled() {
 }
 
 #[test]
-fn observer_alias_to_an_unsupported_agent_is_refused_with_its_reason() {
-    // Refused at import when the alias already exists.
+fn opencode_observer_honors_provider_model_and_variant_and_assesses_root_response() {
     let f = Fixture::new();
-    set_alias(
-        &f,
-        "observer",
-        json!({"executor":"opencode","provider":"synthetic-provider","model":"synthetic-model"}),
-    );
-    let plan_path = plan(&f, "observer", 2);
-    let out = call(
-        &f,
-        &["import", plan_path.to_str().unwrap(), "--run", "demo"],
-    );
-    assert!(!out.status.success());
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("observer alias observer resolves to executor opencode")
-            && stderr.contains("does not support"),
-        "{stderr}"
-    );
-    assert!(!call(&f, &["status", "--run", "demo"]).status.success());
-
-    // Refused at review time when the alias appears only after import.
-    let f = Fixture::new();
-    let plan_path = plan(&f, "later", 2);
-    success(
-        &f,
-        &["import", plan_path.to_str().unwrap(), "--run", "demo"],
-    );
-    set_alias(
-        &f,
-        "later",
-        json!({"executor":"opencode","provider":"synthetic-provider","model":"synthetic-model"}),
-    );
+    let launcher = f.root.join("opencode.py");
+    fs::write(&launcher, r#"import json, os, sys
+args = sys.argv[1:]
+assert args[args.index('--model') + 1] == 'synthetic-provider/vendor/synthetic-model#priority'
+assert '--standalone' in args and '--session' not in args and '--auto' not in args
+settings = json.loads(os.environ['OPENCODE_CONFIG_CONTENT'])
+assert {'action':'tool.use','resource':'*','effect':'deny'} in settings['policies']
+assert not any(k.startswith('JTASKS_') for k in os.environ)
+schema = json.loads(sys.stdin.read().split('RESPONSE SCHEMA:\n', 1)[1])
+p = schema['properties']
+result = {k:p[k]['const'] for k in ['run','task','attempt','review','generation']}
+result.update(decision='retry', rationale='No execution progress', evidence=['commands'], delay_cause='Stalled command')
+print(json.dumps({'type':'text','sessionID':'ses_synthetic','part':{'sessionID':'ses_synthetic','text':json.dumps(result)}}))
+"#).unwrap();
+    let mut a = task("A", &[], "silent", "");
+    a["executor"]["delay_ms"] = json!(30000);
+    a["estimate_seconds"] = json!(1);
+    a["reviews"] = json!({
+        "max_calls":1,"deadline_seconds":30,
+        "observer_unknown_capabilities":{"actor":"test","reason":"synthetic provider"},
+        "observer":{"agent":"opencode","provider":"synthetic-provider","model":"vendor/synthetic-model",
+            "variant":"priority","executable":"python","launcher_args":[launcher]}
+    });
+    let path = f.plan(json!([a]));
+    success(&f, &["import", path.to_str().unwrap(), "--run", "demo"]);
     let mut child = start(&f);
     assert_eq!(finish(&mut child).code(), Some(3));
     let status = f.snapshot();
-    assert_eq!(status["tasks"][0]["state"], "needs_intervention");
+    let attempt = &status["tasks"][0]["attempts"][0];
+    assert_eq!(attempt["review"]["actual_calls"], 1);
+    let conn = Connection::open(f.data.join("state.sqlite3")).unwrap();
+    let response: String = conn
+        .query_row(
+            "SELECT response FROM reviewer_calls WHERE state='finished' LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert_eq!(
-        status["tasks"][0]["attempts"][0]["review"]["actual_calls"],
-        0
+        serde_json::from_str::<Value>(&response).unwrap()["rationale"],
+        "No execution progress"
     );
-    let stops = journal(&f, "review_stop_requested");
-    assert_eq!(stops.len(), 1);
-    let reason = stops[0]["reason"].as_str().unwrap();
-    assert!(
-        reason.starts_with("observer selection rejected:")
-            && reason.contains("observer alias later resolves to executor opencode")
-            && reason.contains("does not support"),
-        "{reason}"
-    );
+    let recorded: String = conn
+        .query_row(
+            "SELECT selection FROM reviewer_selections LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let recorded: Value = serde_json::from_str(&recorded).unwrap();
+    assert_eq!(recorded["values"]["agent"], "opencode");
+    assert_eq!(recorded["values"]["provider"], "synthetic-provider");
+    assert_eq!(recorded["values"]["model"], "vendor/synthetic-model");
+    assert_eq!(recorded["values"]["effort"], "priority");
+    assert_eq!(recorded["observer"]["variant"], "priority");
 }

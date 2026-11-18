@@ -8,7 +8,7 @@ The CLI runs as one native executable: Bun, Node, Python, external jlock and
 jproject are not core runtime dependencies. Workspace commands require Git on
 `PATH`. SQLite is compiled in through `rusqlite`'s bundled feature. Selected native
 executors and authored commands remain external programs with their own runtime,
-configuration, permissions and account requirements. The optional estimator below
+configuration, permissions and account requirements. The estimator below
 separately needs Python; it is not part of controller startup.
 
 Build with Cargo and a native C toolchain (MSVC/Windows SDK on Windows, a C
@@ -177,13 +177,46 @@ Apply holds writer/index guards, uses an isolated index and compare-and-swap of 
 
 `profiles`, `executors`, `catalog` and `doctor` distinguish jtasks aliases, native settings, cached capabilities and actual account access. Inspection/doctor do not invoke models or install/repair anything. Catalog refresh is explicit and scoped. Known-invalid choices are rejected; unknown choices require an attributable exception. No silent model/provider fallback is implied.
 
+Tasks and execution observers use the same selection fields. For example, use
+`{"agent":"opencode","provider":"company-ai","model":"vendor/model","variant":"priority"}`
+as a task's `executor` or as `reviews.observer`. Use `effort` for the common
+reasoning choice, or `variant` for OpenCode. The adapters translate that
+choice into the harness's native setting:
+
+| Agent | Native reasoning setting |
+| --- | --- |
+| Codex | `reasoning_effort`, passed as `-c model_reasoning_effort=…` |
+| Claude Code | `effort`, passed as `--effort …` |
+| OpenCode | `variant`, appended as `--model provider/model#variant` |
+
+Codex and Claude Code can use their configured native provider defaults.
+OpenCode accepts separate provider and model IDs or a combined `provider/model`.
+Custom providers use the corresponding harness configuration. The selected model
+must support the requested effort or variant. Existing native `kind` objects
+remain readable.
+
+Set a reusable worker or observer alias through the dashboard, the Orca panel
+or the CLI:
+
+```text
+jtasks configure --set observer --agent opencode --provider company-ai --model vendor/model --variant priority
+```
+
 Autonomous execution is the default. Opt in to restricted permissions with `run --restricted` or profile `autonomy: "restricted"`; `ask`, `questions`, `answer` and bounded `retry` support that workflow. Native permission modes are not OS sandboxes. Advisory resource release/transfer requires actor/reason, even for active/unknown owners; it never terminates the old process or authorizes concurrent attempts of one task. Inspect `resources --help` and `retry --help`.
 
-## Optional duration estimation and local skills
+## Plan authoring, duration estimation and local skills
 
 Canonical `skills/source/` produces separate Codex, Claude Code and OpenCode instruction packages through `scripts/skills.rs`. They consume this CLI; there is no bundled scheduler per harness. Build/check packages locally as described in `WORKSPACE.md`; global installation is separate.
 
-The optional `estimate-jtasks` skill runs separately after slicing with the plan's explicitly selected configuration and evidence. Its Python helper requires Python 3.10+, the independent CLI and an available configured fresh harness. The Rust CLI needs neither Python nor Bun/Node. The helper validates original and candidate intent, preserves explicit durations and every other field, fills only missing estimates, and keeps insufficient evidence missing. It does not import, start a run, benchmark checks or authorize a provider call implicitly.
+Write the plan with `to-plan`, slice the approved plan with `to-jtasks`,
+and invoke `estimate-jtasks` in a fresh configured session before starting
+the run. The estimator uses the plan's selected configuration and evidence.
+Its Python helper requires Python 3.10+, the independent CLI and an available
+configured harness. The Rust CLI needs neither Python nor Bun/Node. The helper
+validates original and candidate intent, preserves explicit durations and every
+other field, fills only missing estimates, and keeps insufficient evidence
+missing. It does not import, start a run, benchmark checks or authorize a
+provider call implicitly.
 
 The helper buffers stdout/stderr; its 1 MiB stdout acceptance limit is checked after exit and is not a streaming memory cap. Its finite deadline requests process group/tree termination; escaped harness-managed helpers remain unobserved. This is distinct from controller custody. Actual provider/account support and timing accuracy require separate evidence; local protocol substitutes establish neither.
 

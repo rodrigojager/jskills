@@ -46,9 +46,9 @@ Executors are aliases by default: the helper writes `<name>.profiles.json` besid
 
 The helper needs Python 3.10+ and nothing else; the Rust CLI does not need it. It never imports or runs. The spec format is in the last section of the reference, and [assets/compose.spec.json](assets/compose.spec.json) is a small complete example. Do not write a one-off generator script, and do not hand-write the JSON unless Python is unavailable.
 
-Validate through `jtasks validate <plan.json>`, then show `jtasks operations preview <plan.json>` and the task/dependency summary before execution. Include exact initial invocations, cwd, environment reference names, inputs/revision, required status, stages/consumers, repair responsibility, deadlines and capacities. Fix invalid JSON or unsupported capability choices; do not silently substitute a model or change the selected schedule. Import and run only when execution is already authorized; otherwise hand back the validated intent and preview.
+After slicing and before starting a run, invoke the separate `estimate-jtasks` skill in a fresh configured session to fill only missing `estimate_seconds`. Preserve explicit estimates, IDs, requirements, criteria, dependencies and reservations. Report estimates left open for insufficient evidence.
 
-Duration estimation is optional and separate. If requested after slicing, invoke the `estimate-jtasks` skill in a fresh session to fill only missing `estimate_seconds`; preserve explicit estimates, IDs, requirements, criteria, dependencies and reservations. Do not load estimator instructions into the planner by default, claim an unavailable estimator is installed, or run heavy operations to estimate them.
+Validate the resulting intent through `jtasks validate <plan.json>`, then show `jtasks operations preview <plan.json>` and the task/dependency summary before execution. Include exact initial invocations, cwd, environment reference names, inputs/revision, required status, stages/consumers, repair responsibility, deadlines and capacities. Fix invalid JSON or unsupported capability choices; do not silently substitute a model or change the selected schedule. Import and run only when execution is already authorized; otherwise hand back the validated intent and preview.
 
 ## A run that is already imported
 

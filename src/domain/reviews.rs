@@ -25,7 +25,10 @@ pub struct Policy {
     pub deadline_seconds: u64,
     #[serde(default = "extension")]
     pub max_extension_seconds: u64,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "super::profiles::deserialize_optional_selection"
+    )]
     pub observer: Option<Observer>,
 }
 impl Default for Policy {
@@ -57,6 +60,11 @@ pub enum Observer {
         #[serde(flatten)]
         config: crate::executors::claude::ClaudeConfig,
     },
+    #[serde(rename = "opencode")]
+    OpenCode {
+        #[serde(flatten)]
+        config: crate::executors::opencode::OpenCodeConfig,
+    },
     /// A jtasks alias, resolved from the project's aliases when a review is due.
     Profile {
         alias: String,
@@ -66,7 +74,7 @@ pub enum Observer {
 }
 
 /// Executors the execution observer has a read-only protocol for.
-pub const OBSERVER_EXECUTORS: &[&str] = &["codex", "claude"];
+pub const OBSERVER_EXECUTORS: &[&str] = &["codex", "claude", "opencode"];
 
 /// An observer alias that exists now and names an executor the observer does
 /// not support is refused at import; a missing alias is resolved at review time.

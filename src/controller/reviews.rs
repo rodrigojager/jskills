@@ -55,9 +55,18 @@ pub fn resolve_observer(
         .as_ref()
         .context("execution observer is unconfigured")?;
     let Observer::Profile { alias, overrides } = observer else {
+        let native = serde_json::to_value(observer)?;
+        let mut values = native.clone();
+        let mut origins = native
+            .as_object()
+            .context("observer selection must be an object")?
+            .keys()
+            .map(|key| (key.clone(), "observer".into()))
+            .collect();
+        crate::domain::profiles::view_selection(&mut values, &mut origins, &native);
         return Ok(Selection {
             observer: observer.clone(),
-            record: json!({"form":"direct","alias":null,"observer":observer}),
+            record: json!({"form":"direct","alias":null,"observer":native,"values":values,"origins":origins}),
         });
     };
     let plan: Option<String> = conn
@@ -738,6 +747,14 @@ pub fn validate_resolved(
             );
             ("claude", serde_json::to_value(config)?)
         }
+        Observer::OpenCode { config } => {
+            ensure!(
+                config.resume_attempt.is_none(),
+                "observer must use a fresh session"
+            );
+            crate::executors::opencode::validate(config)?;
+            ("opencode", serde_json::to_value(config)?)
+        }
         Observer::Profile { alias, .. } => {
             anyhow::bail!("execution observer alias {alias} must be resolved before validation")
         }
@@ -1096,6 +1113,10 @@ fn launch(
                 "native tools disabled, strict empty MCP config and dontAsk; permission denial is not an OS sandbox",
             )
         }
+        Observer::OpenCode { config } => (
+            crate::executors::opencode::reviewer_command(config)?,
+            "standalone fresh session with native tool, MCP, skill and web search policies denied",
+        ),
         Observer::Profile { alias, .. } => {
             anyhow::bail!("execution observer alias {alias} was not resolved before launch")
         }
@@ -1181,6 +1202,24 @@ fn response(dir: &Path, live: &Live, success: bool) -> Result<(Option<Assessment
                 value.context("review lacks native structured_output")?,
                 false,
             )
+        }
+        Observer::OpenCode { .. } => {
+            let (obs, text) = crate::executors::opencode::observe_review(
+                dir,
+                live.work.task.as_deref().unwrap(),
+                live.work.attempt.as_deref().unwrap(),
+            )?;
+            if obs.failure_class.as_deref() == Some("transient_service_or_connection") {
+                return Ok((None, true, "native infrastructure failure".into()));
+            }
+            ensure!(
+                success
+                    && obs.protocol_error.is_none()
+                    && obs.invalid_records == 0
+                    && obs.session_id.is_some(),
+                "review lacks a successful root OpenCode response"
+            );
+            (serde_json::from_str(&text)?, false)
         }
         Observer::Profile { .. } => anyhow::bail!("review observer was not resolved"),
     };

@@ -54,7 +54,7 @@ fn setup(mode: &str) -> Fixture {
     let script = f.root.join("substitute.py");
     fs::write(&script, SUBSTITUTE).unwrap();
     f.import_native_substitute(json!([{"id":"T01","title":"Direct Claude", "executor":{
-        "kind":"claude","executable":"python","launcher_args":[script,mode],
+        "agent":"claude","executable":"python","launcher_args":[script,mode],
         "prompt":"literal ; $(Write-Output INJECTED) `echo wrong` \"quotes\"\nUnicode: 日本語",
         "model":"selected-model","provider":"anthropic","effort":"high","native_agent":"native-reviewer"
     }}]));

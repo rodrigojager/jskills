@@ -42,7 +42,11 @@ try {
     }
     Write-Host "Isolated runtime PATH: $env:PATH"
     $version = Invoke-Public @('--version')
-    if ($version -notmatch '^jtasks 0\.1\.0$') { throw "Unexpected version: $version" }
+    $manifestVersion = Select-String -LiteralPath (Join-Path $PSScriptRoot '../Cargo.toml') -Pattern '^version = "([^"]+)"$' |
+        Select-Object -First 1
+    if (!$manifestVersion) { throw 'Package version is missing from Cargo.toml' }
+    $expectedVersion = 'jtasks ' + $manifestVersion.Matches[0].Groups[1].Value
+    if ($version -ne $expectedVersion) { throw "Expected $expectedVersion, got $version" }
     $null = Invoke-Public @('--help')
     $planPath = Join-Path $FixtureDir 'plan.json'
     @{

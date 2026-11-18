@@ -49,6 +49,12 @@ Logs/errors load on demand and never pretend to be a complete chat transcript.
 Elapsed uses native persisted wall-time metadata, not summed parallel work.
 Task states are recorded state, not a process-liveness probe.
 
+In the **Agents** editor, worker and observer aliases each have their own
+agent, provider, model and reasoning settings. Select Codex, Claude Code
+or OpenCode. The OpenCode choice appears as **Variant** and accepts names
+from the selected provider and model, including those configured in OpenCode
+outside its built-in catalog.
+
 ## Updates
 
 The panel's **Updates** control checks the plugin and CLI together. Configure

@@ -97,8 +97,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(202, {'stopping': True})
         if self.path == '/api/agents':
             STATE['sets'].append(body)
-            if body.get('alias') == 'observer' and body.get('executor') == 'opencode':
-                return self.send(400, {'error': 'an alias to OpenCode cannot be the observer'})
             return self.send(200, {'alias': body['alias']})
         self.send(404, {'error': 'unknown'})
 
@@ -191,7 +189,7 @@ try:
         page.keyboard.press('Escape')
         expect(page.get_by_role('dialog')).to_have_count(0)
         assert STATE['sets'] == []
-        # Reopened, the editor starts clean again; free text for OpenCode; a server error stays in the dialog.
+        # Reopened, the editor starts clean again and supports a custom OpenCode provider and variant.
         agents.click()
         editor = page.get_by_role('dialog', name='Agents of megalinter-parity')
         expect(editor.locator('.alias')).to_have_count(3, timeout=10000)
@@ -199,11 +197,16 @@ try:
         editor.get_by_label('Agent of observer').select_option('opencode')
         expect(editor.get_by_label('Model name of observer')).to_have_value('')
         expect(editor.get_by_label('Effort of observer')).to_be_disabled()
-        editor.get_by_label('Model name of observer').fill('anthropic/claude-haiku-5-5')
+        editor.get_by_label('Provider of observer').fill('company-ai')
+        editor.get_by_label('Model name of observer').fill('vendor/haiku')
+        editor.get_by_label('Variant of observer').fill('priority')
         editor.get_by_role('button', name='Save').click()
-        expect(editor.get_by_role('alert').filter(has_text='Not saved')).to_contain_text('cannot be the observer')
-        assert STATE['sets'][-1]['alias'] == 'observer' and STATE['sets'][-1]['actor'] == 'web-dashboard' and 'effort' not in STATE['sets'][-1]
-        editor.get_by_label('Agent of observer').select_option('claude')
+        expect(page.get_by_role('dialog')).to_have_count(0)
+        assert STATE['sets'][-1]['alias'] == 'observer' and STATE['sets'][-1]['actor'] == 'web-dashboard'
+        assert STATE['sets'][-1]['provider'] == 'company-ai' and STATE['sets'][-1]['effort'] == 'priority'
+        assert STATE['sets'][-1]['model'] == 'vendor/haiku'
+        agents.click()
+        editor = page.get_by_role('dialog', name='Agents of megalinter-parity')
         editor.get_by_label('Model of deep').select_option('claude-haiku-5-5')
         STATE['sets'].clear()
         editor.get_by_role('button', name='Save').click()

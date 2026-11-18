@@ -915,7 +915,18 @@ pub fn validate_values(
         } else {
             &["none", "minimal", "low", "medium", "high", "xhigh"]
         };
-        ensure!(choices.contains(&effort), "known-invalid {executor} effort");
+        let advertised = executor == "codex"
+            && snapshot.as_ref().is_some_and(|catalog| {
+                now() < catalog.recommended_refresh_at
+                    && catalog
+                        .choices
+                        .iter()
+                        .any(|choice| matches(choice, "effort", effort, values))
+            });
+        ensure!(
+            choices.contains(&effort) || advertised,
+            "known-invalid {executor} effort"
+        );
     }
     if executor == "claude" {
         if let Some(provider) = values["provider"].as_str() {

@@ -66,9 +66,10 @@ fn public_alias_commands_replace_user_alias_and_report_every_effective_origin() 
         json!({"executor":"codex","model":"project-model","native_profile":"native-profile"}),
         "project",
     );
-    let missing = call(&f, &["profiles", "show", "work"]);
-    assert!(!missing.status.success());
-    assert!(String::from_utf8_lossy(&missing.stderr).contains("provider"));
+    let native_default = success(&f, &["profiles", "show", "work"]);
+    assert_eq!(native_default["values"]["model"], "project-model");
+    assert!(native_default["values"].get("provider").is_none());
+    assert!(native_default["origins"].get("provider").is_none());
     let defaults = write(
         &f,
         "defaults.json",

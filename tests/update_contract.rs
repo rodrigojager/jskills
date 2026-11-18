@@ -8,6 +8,14 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+fn next_version() -> String {
+    let mut version = semver::Version::parse(CURRENT_VERSION).unwrap();
+    version.patch += 1;
+    version.to_string()
+}
+
 fn fixture() -> PathBuf {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -26,11 +34,15 @@ fn release(version: &str, name: &str) -> Vec<u8> {
 
 #[test]
 fn check_is_read_only_and_semver_never_downgrades() {
+    let next = next_version();
+    let mut higher_minor = semver::Version::parse(CURRENT_VERSION).unwrap();
+    higher_minor.minor += 10;
+    higher_minor.patch = 0;
     for (version, check, available) in [
-        ("0.1.1", true, true),
-        ("0.1.0", false, false),
-        ("0.0.9", false, false),
-        ("0.10.0", true, true),
+        (next.as_str(), true, true),
+        (CURRENT_VERSION, false, false),
+        ("0.0.1", false, false),
+        (&higher_minor.to_string(), true, true),
     ] {
         let calls = AtomicUsize::new(0);
         let result = update::perform(
@@ -63,8 +75,9 @@ fn bad_checksum_or_missing_asset_preserves_installation_before_execution() {
     let root = fixture();
     let current = root.join("installed");
     fs::write(&current, "original").unwrap();
+    let next = next_version();
     let name = format!(
-        "jtasks-0.1.1-{}{}",
+        "jtasks-{next}-{}{}",
         update::target().unwrap(),
         if cfg!(windows) { ".exe" } else { ".bin" }
     );
@@ -76,10 +89,7 @@ fn bad_checksum_or_missing_asset_preserves_installation_before_execution() {
             },
             |url, _| {
                 if url.ends_with("/latest") {
-                    return Ok(release(
-                        "0.1.1",
-                        if missing { "wrong-target" } else { &name },
-                    ));
+                    return Ok(release(&next, if missing { "wrong-target" } else { &name }));
                 }
                 if url.ends_with(".sha256") {
                     return Ok(format!("{}  {name}", "0".repeat(64)).into_bytes());
@@ -107,7 +117,7 @@ fn bad_checksum_or_missing_asset_preserves_installation_before_execution() {
         },
         |url, _| {
             assert!(url.ends_with("/latest"));
-            Ok(release("0.1.1", &name))
+            Ok(release(&next, &name))
         },
         &current,
         |_| panic!("managed installation must not replace"),
@@ -129,8 +139,9 @@ fn replacement_child() {
         "candidate"
     }))
     .unwrap();
+    let next = next_version();
     let name = format!(
-        "jtasks-0.1.1-{}{}",
+        "jtasks-{next}-{}{}",
         update::target().unwrap(),
         if cfg!(windows) { ".exe" } else { ".bin" }
     );
@@ -142,7 +153,7 @@ fn replacement_child() {
         },
         |url, _| {
             Ok(if url.ends_with("/latest") {
-                release("0.1.1", &name)
+                release(&next, &name)
             } else if url.ends_with(".sha256") {
                 checksum.as_bytes().to_vec()
             } else {
@@ -165,7 +176,12 @@ fn verified_native_replacement_and_wrong_version_rejection() {
     } else {
         "candidate"
     });
-    fs::write(&source, "fn main() { println!(\"jtasks 0.1.1\"); }").unwrap();
+    let next = next_version();
+    fs::write(
+        &source,
+        format!("fn main() {{ println!(\"jtasks {next}\"); }}"),
+    )
+    .unwrap();
     assert!(
         Command::new("rustc")
             .arg(&source)
@@ -209,6 +225,6 @@ fn verified_native_replacement_and_wrong_version_rejection() {
     assert!(result.status.success());
     assert_eq!(
         String::from_utf8_lossy(&result.stdout).trim(),
-        "jtasks 0.1.1"
+        format!("jtasks {next}")
     );
 }

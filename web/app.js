@@ -326,6 +326,7 @@ async function agentsDialog(control, opener) {
   const running = control.controller === 'live';
   body.append(el('p', `Each name is an alias the tasks point to. A change applies to every task that has not started yet${running ? '; running tasks keep the agent they started with' : ''}. Finished tasks keep their history.`));
   const choicesCache = new Map(), rows = [], fallback = {models: [], efforts: [], free_text: true};
+  const customModel = 'Custom model…';
   const choices = executor => {
     if (!choicesCache.has(executor)) choicesCache.set(executor, control.actions.agentsChoices ? control.actions.agentsChoices(executor).catch(() => fallback) : Promise.resolve(fallback));
     return choicesCache.get(executor);
@@ -341,26 +342,57 @@ async function agentsDialog(control, opener) {
     const fields = el('div', undefined, 'fields'), agent = select('Agent', fields), model = select('Model', fields), effort = select('Effort', fields);
     const providerLabel = el('label', 'Provider'), provider = el('input'); provider.value = cfg.provider || ''; provider.setAttribute('autocomplete', 'off'); providerLabel.append(provider); fields.append(providerLabel);
     const freeModel = el('input'); freeModel.hidden = true; model.parentElement.append(freeModel);
-    for (const [n, name] of [[agent, 'Agent'], [model, 'Model'], [freeModel, 'Model name'], [effort, 'Effort'], [provider, 'Provider']]) n.setAttribute('aria-label', `${name} of ${a.alias}`);
+    const variant = el('input'); variant.hidden = true; effort.parentElement.append(variant);
+    const providerOptions = el('datalist'); providerOptions.id = `agent-provider-${rows.length}`;
+    provider.setAttribute('list', providerOptions.id); providerLabel.append(providerOptions);
+    for (const [n, name] of [[agent, 'Agent'], [model, 'Model'], [freeModel, 'Model name'], [effort, 'Effort'], [variant, 'Variant'], [provider, 'Provider']]) n.setAttribute('aria-label', `${name} of ${a.alias}`);
     fill(agent, EXECUTORS, cfg.executor);
-    const row = {alias: a, provider};
-    row.value = () => ({executor: agent.value, model: freeModel.hidden ? model.value : freeModel.value.trim(), effort: effort.disabled ? '' : effort.value, provider: provider.value.trim()});
+    const row = {alias: a};
+    let catalogue = fallback;
+    row.value = () => ({executor: agent.value, model: freeModel.hidden ? model.value : freeModel.value.trim(), effort: variant.hidden ? effort.value : variant.value.trim(), provider: provider.value.trim()});
+    function refreshModels(current) {
+      const options = catalogue.model_options || [], selectedProvider = provider.value.trim();
+      const models = options.length ? options.flatMap(entry => {
+        if (selectedProvider) return !entry.provider || entry.provider === selectedProvider ? [entry.model] : [];
+        return agent.value === 'opencode' && entry.provider ? [`${entry.provider}/${entry.model}`] : [entry.model];
+      }) : catalogue.models || [];
+      model.hidden = !models.length;
+      freeModel.hidden = !!models.length;
+      if (!models.length) freeModel.value = current || '';
+      else fill(model, [...models, customModel], current || undefined);
+    }
+    function refreshEfforts(current) {
+      const v = row.value();
+      const specific = (catalogue.effort_options || []).filter(entry => entry.model === v.model && (!entry.provider || entry.provider === v.provider));
+      const levels = specific.length ? specific.map(entry => entry.effort) : catalogue.efforts || [];
+      fill(effort, ['', ...levels], current || undefined);
+      return levels;
+    }
     row.dirty = () => {
       const v = row.value(), mark = (n, now, was) => n.classList.toggle('changed', now !== (was || ''));
-      mark(agent, v.executor, cfg.executor); mark(model, v.model, cfg.model); mark(freeModel, v.model, cfg.model); mark(effort, v.effort, cfg.effort); mark(provider, v.provider, cfg.provider);
-      return v.executor !== (cfg.executor || '') || v.model !== (cfg.model || '') || v.effort !== (cfg.effort || '') || (!provider.disabled && v.provider !== (cfg.provider || ''));
+      mark(agent, v.executor, cfg.executor); mark(model, v.model, cfg.model); mark(freeModel, v.model, cfg.model); mark(effort, v.effort, cfg.effort); mark(variant, v.effort, cfg.effort); mark(provider, v.provider, cfg.provider);
+      return v.executor !== (cfg.executor || '') || v.model !== (cfg.model || '') || v.effort !== (cfg.effort || '') || v.provider !== (cfg.provider || '');
     };
     row.load = async () => {
-      const c = await choices(agent.value), same = agent.value === cfg.executor;
-      model.hidden = !!c.free_text; freeModel.hidden = !c.free_text;
-      if (c.free_text) freeModel.value = same ? cfg.model || '' : ''; else fill(model, c.models || [], same ? cfg.model : (c.models || [])[0]);
-      const levels = c.efforts || []; effort.disabled = !levels.length;
-      fill(effort, levels, same ? cfg.effort : levels[Math.min(1, levels.length - 1)]);
-      provider.disabled = agent.value !== 'opencode'; if (provider.disabled && !same) provider.value = '';
+      const selected = agent.value, c = await choices(selected), same = selected === cfg.executor;
+      if (agent.value !== selected) return;
+      catalogue = c;
+      provider.value = same ? cfg.provider || '' : '';
+      fill(providerOptions, c.providers || []);
+      freeModel.value = same ? cfg.model || '' : '';
+      refreshModels(same ? cfg.model : undefined);
+      const openCode = selected === 'opencode';
+      effort.disabled = openCode; effort.hidden = openCode; variant.hidden = !openCode;
+      effort.parentElement.firstChild.textContent = openCode ? 'Variant' : 'Effort';
+      const levels = refreshEfforts(same && !openCode ? cfg.effort : undefined);
+      if (!same && selected === 'codex' && levels.includes('medium')) effort.value = 'medium';
+      variant.value = same && openCode ? cfg.effort || '' : '';
       summarize();
     };
     agent.onchange = () => row.load();
-    for (const n of [model, effort, provider, freeModel]) n.oninput = summarize;
+    model.oninput = () => { freeModel.hidden = model.value !== customModel; refreshEfforts(effort.value); summarize(); };
+    provider.onchange = () => { refreshModels(row.value().model); refreshEfforts(effort.value); summarize(); };
+    for (const n of [effort, variant, provider, freeModel]) n.oninput = summarize;
     box.append(head, fields);
     const states = Object.entries(a.states || {}).map(([k, n]) => `${n} ${human(k)}`).join(', ');
     if (states) box.append(el('div', states, 'effect'));
@@ -373,8 +405,8 @@ async function agentsDialog(control, opener) {
     try {
       for (const r of changed) {
         const v = r.value(), change = {alias: r.alias.alias, executor: v.executor, model: v.model};
-        if (v.effort) change.effort = v.effort;
-        if (!r.provider.disabled && v.provider) change.provider = v.provider;
+        if (v.effort || r.alias.configuration?.effort) change.effort = v.effort || 'native-default';
+        if (v.provider || r.alias.configuration?.provider) change.provider = v.provider || 'native-default';
         await control.actions.agentsSet(change);
       }
       d.close(); toast('Saved. Tasks that start from now use the chosen agents.'); setTimeout(() => load(false), 500);

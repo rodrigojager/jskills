@@ -118,7 +118,7 @@ fn command(config: &OpenCodeConfig) -> Result<Command> {
     Ok(command)
 }
 
-fn validate(config: &OpenCodeConfig) -> Result<()> {
+pub(crate) fn validate(config: &OpenCodeConfig) -> Result<()> {
     for (field, value) in [
         ("provider", config.provider.as_str()),
         ("model", &config.model),
@@ -142,6 +142,62 @@ fn validate(config: &OpenCodeConfig) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn model_selector(config: &OpenCodeConfig) -> String {
+    let model = format!("{}/{}", config.provider, config.model);
+    match &config.variant {
+        Some(variant) => format!("{model}#{variant}"),
+        None => model,
+    }
+}
+
+pub(crate) fn reviewer_command(config: &OpenCodeConfig) -> Result<Command> {
+    validate(config)?;
+    ensure!(
+        config.resume_attempt.is_none(),
+        "observer must use a fresh session"
+    );
+    let mut settings = match std::env::var("OPENCODE_CONFIG_CONTENT") {
+        Ok(raw) => serde_json::from_str::<Value>(&raw).context("invalid inline OpenCode config")?,
+        Err(std::env::VarError::NotPresent) => json!({}),
+        Err(error) => return Err(error.into()),
+    };
+    let settings_map = settings
+        .as_object_mut()
+        .context("inline OpenCode config must be an object")?;
+    for key in ["permissions", "policies"] {
+        let rules = settings_map.entry(key).or_insert_with(|| json!([]));
+        let rules = rules
+            .as_array_mut()
+            .with_context(|| format!("OpenCode {key} must be an array"))?;
+        let actions: &[&str] = if key == "permissions" {
+            &["*"]
+        } else {
+            &["tool.use", "mcp.use", "skill.use", "websearch.use"]
+        };
+        rules.extend(
+            actions
+                .iter()
+                .map(|action| json!({"action":action,"resource":"*","effect":"deny"})),
+        );
+    }
+    settings["snapshots"] = json!(false);
+    let mut command = command(config)?;
+    command
+        .args([
+            "run",
+            "--standalone",
+            "--archived",
+            "--format",
+            "json",
+            "--agent",
+            "build",
+            "--model",
+        ])
+        .arg(model_selector(config))
+        .env("OPENCODE_CONFIG_CONTENT", settings.to_string());
+    Ok(command)
 }
 
 fn session_id(value: &str) -> bool {
@@ -273,16 +329,7 @@ pub fn launch(
             &config.native_agent,
             "--model",
         ])
-        .arg(format!(
-            "{}/{}{}",
-            config.provider,
-            config.model,
-            config
-                .variant
-                .as_ref()
-                .map(|v| format!("#{v}"))
-                .unwrap_or_default()
-        ));
+        .arg(model_selector(config));
     if matches!(config.permissions, PermissionMode::Autonomous) {
         command.arg("--auto");
     }
@@ -331,6 +378,19 @@ pub fn launch(
 /// Raw bytes stay intact. Complete JSONL records are evidence only; v2.3.0
 /// emits step hints and activity, not a constrained designated final envelope.
 pub fn observe(dir: &Path, task: &str, attempt: &str) -> Result<Observation> {
+    Ok(decode(dir, task, attempt, false)?.0)
+}
+
+pub(crate) fn observe_review(
+    dir: &Path,
+    task: &str,
+    attempt: &str,
+) -> Result<(Observation, String)> {
+    decode(dir, task, attempt, true)
+}
+
+fn decode(dir: &Path, task: &str, attempt: &str, review: bool) -> Result<(Observation, String)> {
+    let mut review_text = String::new();
     let mut result = Observation {
         decoding: Default::default(),
         task_id: task.into(),
@@ -414,10 +474,19 @@ pub fn observe(dir: &Path, task: &str, attempt: &str) -> Result<Observation> {
             result.step_finishes += 1;
         } else {
             result.activity_records += 1;
+            if review && kind == "tool_use" {
+                result.protocol_error = Some("observer attempted tool use".into());
+            }
+            if review && kind == "text" {
+                let text = value["part"]["text"]
+                    .as_str()
+                    .context("missing OpenCode text part")?;
+                review_text.push_str(text);
+            }
         }
     }
     result.decoding = reader.provenance();
-    Ok(result)
+    Ok((result, review_text))
 }
 
 pub fn capture_interrupted(workspace: &Workspace, task: &str, attempt: &str) -> Result<()> {

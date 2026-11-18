@@ -224,7 +224,7 @@ fn menu_changes_an_alias_and_escape_writes_nothing() {
         success(&f, &["configure", "--list"])["aliases"][0]["configuration"]["model"],
         "model-one"
     );
-    let done = menu(&f, "1\nclaude\nmodel-menu\nhigh\ny\n");
+    let done = menu(&f, "1\nclaude\nmodel-menu\nhigh\nanthropic\ny\n");
     assert!(
         done.status.success(),
         "{}",
@@ -249,4 +249,23 @@ fn choices_lists_efforts_and_models_in_use() {
     assert!(out["efforts"].as_array().unwrap().contains(&json!("high")));
     assert!(out["catalogue"].is_string());
     assert!(!call(&f, &["configure", "--choices", "nope"]).status.success());
+}
+
+#[test]
+fn one_observer_alias_can_switch_between_native_agents() {
+    let f = prepared();
+    for (agent, provider, model, variant) in [
+        ("codex", "custom-codex", "model-one", "high"),
+        ("opencode", "company-ai", "vendor/model-two", "priority"),
+        ("claude", "vertex", "model-three", "max"),
+    ] {
+        let change = success(&f, &[
+            "configure", "--set", "watcher", "--agent", agent,
+            "--provider", provider, "--model", model, "--variant", variant,
+        ]);
+        assert_eq!(change["changed"]["new"]["executor"], agent);
+        assert_eq!(change["changed"]["new"]["provider"], provider);
+        assert_eq!(change["changed"]["new"]["model"], model);
+        assert_eq!(change["changed"]["new"]["effort"], variant);
+    }
 }
