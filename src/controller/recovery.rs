@@ -237,7 +237,16 @@ pub fn after_retire(
         !matches!(state.as_str(), "running" | "launch_intent" | "uncertain"),
         "retire owned work before recovery"
     );
-    if matches!(outcome.as_deref(), Some("completed" | "blocked")) {
+    if outcome.as_deref() == Some("blocked") {
+        // Record the kind so `jtasks retry` can turn it into an infrastructure grant.
+        let root = super::graph::root(&store.conn, run, task)?;
+        store.conn.execute(
+            "UPDATE recovery_lineages SET next_kind='blocked' WHERE run_id=?1 AND task_id=?2",
+            [run, root.as_str()],
+        )?;
+        return Ok(());
+    }
+    if outcome.as_deref() == Some("completed") {
         return Ok(());
     }
     let launch_state: Option<String> = store

@@ -166,6 +166,51 @@ fn actual_controller_wait_releases_capacity_and_resource_then_manual_retry_resum
     assert_eq!(fs::read_to_string(f.root.join("calls")).unwrap(), "2");
 }
 
+const BLOCKED_THEN_DONE: &str = r#"
+import json,sys
+from pathlib import Path
+sys.stdin.read()
+p=Path('calls');n=int(p.read_text())+1 if p.exists() else 1;p.write_text(str(n))
+args=sys.argv[1:];session=args[args.index('--resume' if '--resume' in args else '--session-id')+1]
+permission=args[args.index('--permission-mode')+1]
+print(json.dumps({'type':'system','subtype':'init','session_id':session,'permissionMode':permission}))
+schema=json.loads(args[args.index('--json-schema')+1]);r={k:v['const'] for k,v in schema['properties'].items() if 'const' in v}
+r.update(outcome='blocked' if n==1 else 'completed',summary='blocked once' if n==1 else 'done after retry')
+print(json.dumps({'type':'result','subtype':'success','session_id':session,'is_error':False,'structured_output':r}))
+"#;
+
+#[test]
+fn blocked_task_is_retried_with_history_and_completes() {
+    let f = Fixture::new();
+    let script = f.root.join("native.py");
+    fs::write(&script, BLOCKED_THEN_DONE).unwrap();
+    let a = json!({"id":"A","title":"Blocked once","unknown_capabilities":{"actor":"blocked-test","reason":"Synthetic emitter without provider calls"},"executor":{"kind":"claude","executable":"python","launcher_args":[script]}});
+    f.import(json!([a]));
+    let first = f.call(&["run", "--run", "demo"]);
+    let _ = first;
+    assert_eq!(fs::read_to_string(f.root.join("calls")).unwrap(), "1");
+    let retry = f.call(&[
+        "retry",
+        "A",
+        "--run",
+        "demo",
+        "--reason",
+        "unblocked externally",
+        "--request-id",
+        "blocked-a",
+    ]);
+    assert!(
+        retry.status.success(),
+        "{}",
+        String::from_utf8_lossy(&retry.stderr)
+    );
+    f.call(&["run", "--run", "demo"]);
+    assert_eq!(fs::read_to_string(f.root.join("calls")).unwrap(), "2");
+    let status = f.snapshot();
+    assert_eq!(status["tasks"][0]["state"], "completed");
+    assert_eq!(status["tasks"][0]["attempts"].as_array().unwrap().len(), 2);
+}
+
 #[test]
 fn manual_exhausted_grant_is_one_durable_idempotent_attempt() {
     let f = Fixture::new();
