@@ -43,7 +43,7 @@ pub fn read(path: &Path, run: &str) -> Result<Status> {
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
-    conn.busy_timeout(std::time::Duration::from_secs(2))?;
+    conn.busy_timeout(crate::storage::READER_BUSY_TIMEOUT)?;
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     ensure!(
         version == crate::storage::schema::VERSION,

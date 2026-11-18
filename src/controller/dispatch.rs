@@ -21,7 +21,14 @@ struct Active {
     claude: bool,
     opencode: bool,
     native: Option<super::activity::NativeCursor>,
+    /// Native output is read in batches, a few times a second, not on every loop turn.
+    next_native: Instant,
 }
+
+/// How often a worker's native stream is read and committed (one transaction per read).
+const NATIVE_POLL: Duration = Duration::from_millis(250);
+/// How often the controller redraws its own terminal panel (a full status read each time).
+const PANEL_REFRESH: Duration = Duration::from_millis(2000);
 
 /// The only runtime writer: transactions are finished before process/socket waits.
 pub fn run(workspace: &Workspace, run: &str) -> Result<i32> {
@@ -96,7 +103,7 @@ pub fn run_with_panel(
                     Err(_) => panel = None,
                 }
             }
-            next_panel = Instant::now() + Duration::from_millis(500);
+            next_panel = Instant::now() + PANEL_REFRESH;
         }
         stopped |= super::lifetime::interrupted();
         if stopped {
@@ -299,7 +306,11 @@ pub fn run_with_panel(
                 )?;
                 current.child.request_stop()?;
             }
-            if let Some(native) = &mut current.native {
+            let native_due = Instant::now() >= current.next_native;
+            if native_due {
+                current.next_native = Instant::now() + NATIVE_POLL;
+            }
+            if let (true, Some(native)) = (native_due, &mut current.native) {
                 native.poll(
                     &store.conn,
                     &workspace.data.join("attempts").join(&current.id),
@@ -471,6 +482,7 @@ pub fn run_with_panel(
                         token,
                         child,
                         native: None,
+                        next_native: Instant::now(),
                         codex: matches!(
                             task.executor,
                             crate::domain::types::Executor::Codex { .. }

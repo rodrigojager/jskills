@@ -67,7 +67,7 @@ pub fn open(workspace: &Workspace) -> Result<Connection> {
         workspace.database(),
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
-    conn.busy_timeout(std::time::Duration::from_secs(2))?;
+    conn.busy_timeout(crate::storage::READER_BUSY_TIMEOUT)?;
     ensure!(
         conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))?
             == crate::storage::schema::VERSION,

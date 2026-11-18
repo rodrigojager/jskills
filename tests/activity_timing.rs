@@ -432,6 +432,81 @@ while not Path('release').exists() and time.monotonic()<end:time.sleep(.01)
 schema=json.loads(args[args.index('--json-schema')+1]);r={k:v['const'] for k,v in schema['properties'].items() if 'const' in v};r.update(outcome='completed',summary='synthetic native completed')
 emit({'type':'result','subtype':'success','session_id':session,'is_error':False,'structured_output':r})
 "#;
+// A worker that streams thousands of content-less deltas (what `--include-partial-messages` produces) while
+// another process holds a read transaction on the database for seconds: the controller must keep writing,
+// coalesce the deltas instead of journaling each one, and finish the task. On 2026-11-18 a busy database
+// ended a real controller with "database is locked".
+const FLOOD: &str = r#"
+import json,sys,time
+from pathlib import Path
+sys.stdin.read()
+args=sys.argv[1:];session=args[args.index('--session-id')+1]
+def emit(v):print(json.dumps(v),flush=True)
+emit({'type':'system','subtype':'init','session_id':session,'permissionMode':args[args.index('--permission-mode')+1]})
+for i in range(3000):
+    emit({'type':'stream_event','session_id':session,'event':{'type':'content_block_delta','delta':{'type':'input_json_delta','partial_json':'x'}}})
+    if i % 100 == 0: time.sleep(0.1)
+Path('flooded').write_text('ok')
+while not Path('release').exists(): time.sleep(.01)
+schema=json.loads(args[args.index('--json-schema')+1]);r={k:v['const'] for k,v in schema['properties'].items() if 'const' in v};r.update(outcome='completed',summary='flood completed')
+emit({'type':'result','subtype':'success','session_id':session,'is_error':False,'structured_output':r})
+"#;
+#[test]
+fn a_long_reader_and_a_flooding_worker_do_not_stop_the_controller() {
+    let f = Fixture::new();
+    let path = f.root.join("flood.py");
+    fs::write(&path, FLOOD).unwrap();
+    f.import(json!([{"id":"A","title":"Flooding native stream","unknown_capabilities":{"actor":"activity-test","reason":"Synthetic protocol emitter, no provider account"},"executor":{"kind":"claude","executable":"python","launcher_args":[path]}}]));
+    let mut run = Running {
+        child: f
+            .command()
+            .args(["run", "--run", "demo"])
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+        f: &f,
+    };
+    // Once the controller is up (its endpoint is written, the database is in WAL), a reader holds a read
+    // transaction for 4 seconds while the worker floods, longer than the old 2 s wait.
+    let up = Instant::now() + Duration::from_secs(30);
+    while !f.data.join("control.json").exists() {
+        assert!(Instant::now() < up, "the controller never started");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let reader = jtasks::storage::open_reader(&f.data.join("state.sqlite3")).unwrap();
+    reader.execute_batch("BEGIN").unwrap();
+    let _: i64 = reader
+        .query_row("SELECT count(*) FROM journal", [], |r| r.get(0))
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(4));
+    reader.execute_batch("COMMIT").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !f.root.join("flooded").exists() {
+        assert!(Instant::now() < deadline, "the worker never finished flooding");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    drop(reader);
+    assert!(
+        run.child.try_wait().unwrap().is_none(),
+        "the controller must still be running after a long reader"
+    );
+    fs::write(f.root.join("release"), "release").unwrap();
+    assert!(run.child.wait().unwrap().success());
+    assert_eq!(f.snapshot()["tasks"][0]["state"], "completed");
+    let c = jtasks::storage::open_reader(&f.data.join("state.sqlite3")).unwrap();
+    let rows: i64 = c
+        .query_row(
+            "SELECT count(*) FROM journal WHERE event='activity'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        rows < 300,
+        "3000 content-less deltas must be coalesced, found {rows} activity rows"
+    );
+}
+
 #[test]
 fn native_and_explicit_logs_are_committed_live_before_retirement() {
     let f = Fixture::new();

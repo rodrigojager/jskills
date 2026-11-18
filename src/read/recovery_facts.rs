@@ -121,6 +121,7 @@ pub fn read(
         database,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
+    conn.busy_timeout(crate::storage::READER_BUSY_TIMEOUT)?;
     conn.execute_batch("BEGIN")?;
     let total: i64 = conn.query_row(
         "SELECT count(*) FROM attempts WHERE run_id=?1 AND task_id=?2 AND id<>?3",

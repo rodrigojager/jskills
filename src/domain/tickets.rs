@@ -139,6 +139,7 @@ pub fn write_attempt_ticket(workspace: &Workspace, task: &Task, attempt: &str) -
         workspace.database(),
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
+    conn.busy_timeout(crate::storage::READER_BUSY_TIMEOUT)?;
     let (run, task_id, plan): (String, String, String) = conn.query_row("SELECT a.run_id,a.task_id,r.plan FROM attempts a JOIN runs r ON r.id=a.run_id WHERE a.id=?1", [attempt], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
     ensure!(
         task_id == task.id,

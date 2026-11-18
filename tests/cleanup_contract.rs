@@ -54,7 +54,8 @@ impl Setup {
         Self {
             fixture,
             workspace,
-            conn: store.conn,
+            // Store switches its database out of WAL when dropped, so its connection is swapped out, not moved.
+            conn: std::mem::replace(&mut store.conn, Connection::open_in_memory().unwrap()),
             guard,
         }
     }

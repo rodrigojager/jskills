@@ -188,7 +188,7 @@ pub fn launch(
     let (session, resumed) = if let Some(previous) = &config.resume_attempt {
         crate::domain::validation::identifier(previous)?;
         ensure!(previous != attempt, "cannot resume the current attempt");
-        let same_task: bool = rusqlite::Connection::open_with_flags(workspace.database(), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?
+        let same_task: bool = crate::storage::open_reader(&workspace.database())?
             .query_row("SELECT EXISTS(SELECT 1 FROM attempts p JOIN attempts n ON p.run_id=n.run_id AND p.task_id=n.task_id WHERE p.id=?1 AND n.id=?2 AND p.state IN ('retired','interrupted'))", [previous,attempt], |r|r.get(0))?;
         ensure!(
             same_task,

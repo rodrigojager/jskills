@@ -114,12 +114,41 @@ pub struct Store {
     pub conn: Connection,
 }
 
+/// A writer waits this long for a lock before an error; a transient lock never ends a run.
+pub const WRITER_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+/// A read-only projection waits this long for the writer to finish a commit.
+pub const READER_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// A read-only connection that waits for the writer instead of failing on a busy database.
+pub fn open_reader(path: &std::path::Path) -> rusqlite::Result<Connection> {
+    let conn = Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.busy_timeout(READER_BUSY_TIMEOUT)?;
+    Ok(conn)
+}
+
+/// WAL is for while a writer is open. When it closes, the database returns to a single file, so an offline
+/// read-only command finds no `-wal`/`-shm` files to create or change. If a reader still has it open the switch
+/// is skipped; SQLite then folds the log back in when the last connection closes.
+impl Drop for Store {
+    fn drop(&mut self) {
+        let _ = self.conn.pragma_update(None, "journal_mode", "DELETE");
+    }
+}
+
 impl Store {
     /// Only a caller holding ControllerGuard may open a runtime writer.
     pub fn open(workspace: &Workspace, _guard: &crate::resources::ControllerGuard) -> Result<Self> {
         fs::create_dir_all(&workspace.data)?;
         let conn = Connection::open(workspace.database())?;
-        conn.busy_timeout(std::time::Duration::from_secs(2))?;
+        // WAL lets readers (panels, status, other commands) run beside the writer instead of blocking its
+        // commits, and a writer that meets a lock waits instead of failing the controller. Several runs in
+        // different folders each have their own database, so they never contend with each other.
+        conn.busy_timeout(WRITER_BUSY_TIMEOUT)?;
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version == 0 {
@@ -127,6 +156,12 @@ impl Store {
         } else {
             ensure!(version == schema::VERSION, "unsupported runtime schema");
         }
+        // Status, elapsed time, events and errors look the journal up by run and event; without these
+        // indexes each of those reads scans the whole history, which grows with every worker record.
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS journal_run_event ON journal(run_id,event,sequence);
+             CREATE INDEX IF NOT EXISTS journal_run_task ON journal(run_id,task_id,sequence);",
+        )?;
         crate::controller::graph::initialize(&conn)?;
         crate::controller::recovery::initialize(&conn)?;
         crate::controller::cooldowns::initialize(&conn)?;

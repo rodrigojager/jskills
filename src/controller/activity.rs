@@ -1,5 +1,5 @@
 //! Attributable events and their activity projection share one transaction.
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -68,36 +68,64 @@ pub fn commit(
     event: &Event,
     now_ms: u64,
 ) -> Result<i64> {
-    ensure!(
-        event.source.len() <= 128 && event.content.as_ref().is_none_or(|s| s.len() <= 65536),
-        "oversized activity event"
-    );
+    commit_many(conn, run, task, attempt, std::slice::from_ref(event), now_ms)?
+        .context("activity event was not recorded")
+}
+
+/// A batch of events observed together is one transaction, so a busy worker stream costs one write per poll
+/// rather than one per record. A record without content that repeats the previous record of the batch (a
+/// streamed delta) only advances the timestamps; the retained raw capture keeps every record.
+/// Returns the sequence of the last journal row written, if any.
+pub fn commit_many(
+    conn: &Connection,
+    run: &str,
+    task: &str,
+    attempt: &str,
+    events: &[Event],
+    now_ms: u64,
+) -> Result<Option<i64>> {
+    if events.is_empty() {
+        return Ok(None);
+    }
+    for event in events {
+        ensure!(
+            event.source.len() <= 128 && event.content.as_ref().is_none_or(|s| s.len() <= 65536),
+            "oversized activity event"
+        );
+    }
     let tx = conn.unchecked_transaction()?;
     let current: Option<bool> = tx.query_row("SELECT state='running' AND outcome IS NULL FROM attempts WHERE id=?1 AND run_id=?2 AND task_id=?3",[attempt,run,task],|r|r.get(0)).optional()?;
     ensure!(current.is_some(), "unknown activity attempt identity");
     begin(&tx, attempt, now_ms)?;
-    let eligible = current == Some(true)
-        && event.actor == Actor::Worker
-        && event.severity != Severity::Error
-        && event.kind != Kind::Other;
-    let serialized = serde_json::to_string(event)?;
-    tx.execute("INSERT INTO journal(run_id,task_id,attempt_id,event,detail) VALUES(?1,?2,?3,'activity',?4)",params![run,task,attempt,serialized])?;
-    let seq = tx.last_insert_rowid();
     let now = i64::try_from(now_ms)?;
-    tx.execute("INSERT INTO activity_events(sequence,attempt_id,observed_ms,event,eligible) VALUES(?1,?2,?3,?4,?5)",params![seq,attempt,now,serialized,eligible])?;
-    let distinct = if eligible && event.kind == Kind::Message {
-        if let Some(content) = event.content.as_deref().filter(|s| !s.trim().is_empty()) {
-            tx.execute(
-                "INSERT OR IGNORE INTO activity_content(attempt_id,content) VALUES(?1,?2)",
-                [attempt, content],
-            )? > 0
-        } else {
-            false
+    let (mut seq, mut previous) = (None, None::<String>);
+    let (mut any_eligible, mut any_distinct, mut any_tool) = (false, false, false);
+    for event in events {
+        let eligible = current == Some(true)
+            && event.actor == Actor::Worker
+            && event.severity != Severity::Error
+            && event.kind != Kind::Other;
+        let serialized = serde_json::to_string(event)?;
+        any_eligible |= eligible;
+        any_tool |= eligible && event.kind == Kind::Tool;
+        if event.content.is_none() && previous.as_deref() == Some(serialized.as_str()) {
+            continue;
         }
-    } else {
-        false
-    };
-    tx.execute("UPDATE attempt_activity SET last_sequence=?2,last_log_ms=?3,last_activity_ms=CASE WHEN ?4 THEN ?3 ELSE last_activity_ms END,last_distinct_content_ms=CASE WHEN ?5 THEN ?3 ELSE last_distinct_content_ms END,last_tool_activity_ms=CASE WHEN ?6 THEN ?3 ELSE last_tool_activity_ms END WHERE attempt_id=?1",params![attempt,seq,now,eligible,distinct,eligible && event.kind==Kind::Tool])?;
+        tx.execute("INSERT INTO journal(run_id,task_id,attempt_id,event,detail) VALUES(?1,?2,?3,'activity',?4)",params![run,task,attempt,serialized])?;
+        let row = tx.last_insert_rowid();
+        tx.execute("INSERT INTO activity_events(sequence,attempt_id,observed_ms,event,eligible) VALUES(?1,?2,?3,?4,?5)",params![row,attempt,now,serialized,eligible])?;
+        if eligible && event.kind == Kind::Message {
+            if let Some(content) = event.content.as_deref().filter(|s| !s.trim().is_empty()) {
+                any_distinct |= tx.execute(
+                    "INSERT OR IGNORE INTO activity_content(attempt_id,content) VALUES(?1,?2)",
+                    [attempt, content],
+                )? > 0;
+            }
+        }
+        seq = Some(row);
+        previous = Some(serialized);
+    }
+    tx.execute("UPDATE attempt_activity SET last_sequence=coalesce(?2,last_sequence),last_log_ms=?3,last_activity_ms=CASE WHEN ?4 THEN ?3 ELSE last_activity_ms END,last_distinct_content_ms=CASE WHEN ?5 THEN ?3 ELSE last_distinct_content_ms END,last_tool_activity_ms=CASE WHEN ?6 THEN ?3 ELSE last_tool_activity_ms END WHERE attempt_id=?1",params![attempt,seq,now,any_eligible,any_distinct,any_tool])?;
     tx.commit()?;
     Ok(seq)
 }
@@ -161,6 +189,7 @@ impl NativeCursor {
         let mut bytes = Vec::new();
         file.take(65536).read_to_end(&mut bytes)?;
         self.offset += bytes.len() as u64;
+        let mut batch = Vec::new();
         for byte in bytes {
             if byte == b'\n' {
                 let event = if self.discarding {
@@ -174,7 +203,7 @@ impl NativeCursor {
                 } else {
                     self.normalize()
                 };
-                commit(conn, run, task, attempt, &event, now_ms)?;
+                batch.push(event);
                 self.pending.clear();
                 self.discarding = false;
             } else if !self.discarding {
@@ -193,21 +222,15 @@ impl NativeCursor {
         self.stderr_offset += bytes.len() as u64;
         if !bytes.is_empty() {
             // Stream selection is not an error classifier or proof of progress.
-            commit(
-                conn,
-                run,
-                task,
-                attempt,
-                &Event {
-                    actor: Actor::Unattributed,
-                    source: format!("native:{}:stderr", self.executor),
-                    kind: Kind::Other,
-                    severity: Severity::Info,
-                    content: Some(String::from_utf8_lossy(&bytes).into_owned()),
-                },
-                now_ms,
-            )?;
+            batch.push(Event {
+                actor: Actor::Unattributed,
+                source: format!("native:{}:stderr", self.executor),
+                kind: Kind::Other,
+                severity: Severity::Info,
+                content: Some(String::from_utf8_lossy(&bytes).into_owned()),
+            });
         }
+        commit_many(conn, run, task, attempt, &batch, now_ms)?;
         Ok(())
     }
     pub fn drain(
