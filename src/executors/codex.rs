@@ -1,10 +1,12 @@
 //! Direct Codex exec adapter. Wire contract checked against codex-cli 0.169.0
 //! and openai/codex rust-v0.169.0 exec_events.rs/event_processor_with_jsonl_output.rs.
 use crate::{
+    controller::cooldowns::Hint,
     domain::types::{Receipt, Task},
     storage::{Store, Workspace},
 };
 use anyhow::{Context, Result, ensure};
+use chrono::{DateTime, Local, NaiveDate, NaiveTime, TimeZone};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -69,6 +71,8 @@ pub struct Observation {
     pub raw_stdout: PathBuf,
     pub raw_stderr: PathBuf,
     pub failure_class: Option<String>,
+    #[serde(default)]
+    pub cooldown_hint: Hint,
 }
 
 pub(crate) fn command(config: &CodexConfig) -> Result<Command> {
@@ -255,11 +259,17 @@ pub fn observe(dir: &Path, task: &str, attempt: &str) -> Result<(Observation, Op
         raw_stdout: dir.join("stdout.log"),
         raw_stderr: dir.join("stderr.log"),
         failure_class: None,
+        cooldown_hint: Hint::default(),
     };
     let mut final_text = None;
     let mut started = false;
-    let mut reader =
-        crate::read::output::Records::new(BufReader::new(File::open(&observation.raw_stdout)?));
+    let stdout = File::open(&observation.raw_stdout)?;
+    let captured_at = stdout
+        .metadata()
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .map(DateTime::<Local>::from);
+    let mut reader = crate::read::output::Records::new(BufReader::new(stdout));
     while let Some(record) = reader.next_record()? {
         let Some(mut bytes) = record.bytes else {
             observation.invalid_records += 1;
@@ -310,9 +320,32 @@ pub fn observe(dir: &Path, task: &str, attempt: &str) -> Result<(Observation, Op
             Some("turn.completed") if started => {
                 observation.completed_turn = true;
             }
-            Some("turn.failed") | Some("error") => {
+            Some(kind @ ("turn.failed" | "error")) => {
                 observation.protocol_error = Some("native turn failed".into());
-                observation.failure_class = Some(classify_error(&value.to_string()).into());
+                let error = if kind == "turn.failed" {
+                    &value["error"]
+                } else {
+                    &value
+                };
+                let message = error["message"].as_str().unwrap_or("");
+                let class = if usage_limit_tail(message).is_some()
+                    || message.starts_with("Your workspace is out of credits.")
+                    || message.starts_with("You hit your spend cap ")
+                    || message.starts_with("rate limit exceeded:")
+                {
+                    "quota_reset_unknown"
+                } else {
+                    classify_error(&value.to_string())
+                };
+                // Some CLI versions emit a generic turn.failed after the actual
+                // error. Keep the most recent classified event in that case.
+                if class != "unknown" || observation.failure_class.is_none() {
+                    observation.failure_class = Some(class.into());
+                    observation.cooldown_hint = Hint {
+                        reset_at_ms: captured_at.as_ref().and_then(|at| codex_reset(message, at)),
+                        retry_after_ms: None,
+                    };
+                }
             }
             Some("item.started" | "item.updated" | "item.completed") => {}
             _ => observation.unknown_records += 1,
@@ -332,6 +365,87 @@ pub fn classify_error(text: &str) -> &'static str {
         "transient_service_or_connection"
     } else {
         "unknown"
+    }
+}
+
+fn usage_limit_tail(message: &str) -> Option<&str> {
+    let tail = message
+        .strip_prefix("You’ve hit your usage limit")
+        .or_else(|| message.strip_prefix("You've hit your usage limit"))?;
+    (tail.starts_with('.') || tail.starts_with(" for ")).then_some(tail)
+}
+
+/// codex exec JSONL exposes only the rendered error message, even when Codex
+/// internally receives an exact reset timestamp. Parse only the native usage
+/// error's fixed prefix and suffix. Its local clock is displayed to the minute.
+/// https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/protocol/src/error.rs
+fn codex_reset<Tz: TimeZone>(message: &str, captured_at: &DateTime<Tz>) -> Option<u64> {
+    let tail = usage_limit_tail(message)?;
+    let (_, rendered) = tail
+        .rsplit_once(" or try again at ")
+        .or_else(|| tail.rsplit_once(". Try again at "))?;
+    let rendered = rendered.strip_suffix('.')?;
+    let local = if let Ok(time) = NaiveTime::parse_from_str(rendered, "%-I:%M %p") {
+        captured_at.date_naive().and_time(time)
+    } else {
+        let (month_day, rest) = rendered.split_once(", ")?;
+        let (month, ordinal) = month_day.split_once(' ')?;
+        let day = ordinal
+            .strip_suffix("st")
+            .or_else(|| ordinal.strip_suffix("nd"))
+            .or_else(|| ordinal.strip_suffix("rd"))
+            .or_else(|| ordinal.strip_suffix("th"))?;
+        let (year, time) = rest.split_once(' ')?;
+        NaiveDate::parse_from_str(&format!("{month} {day} {year}"), "%b %-d %Y")
+            .ok()?
+            .and_time(NaiveTime::parse_from_str(time, "%-I:%M %p").ok()?)
+    };
+    let reset = captured_at
+        .timezone()
+        .from_local_datetime(&local)
+        .single()?
+        .timestamp_millis()
+        .checked_add(60_000)?;
+    // A same-day reset can straddle capture at midnight. Reject stale/ambiguous
+    // displays instead of guessing a date or re-running immediately.
+    if reset <= captured_at.timestamp_millis() {
+        return None;
+    }
+    u64::try_from(reset).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::FixedOffset;
+
+    #[test]
+    fn native_usage_message_only_grants_a_future_unambiguous_reset() {
+        let tz = FixedOffset::west_opt(3 * 3600).unwrap();
+        let observed = tz.with_ymd_and_hms(2026, 11, 18, 13, 27, 12).unwrap();
+        let reset = tz.with_ymd_and_hms(2026, 11, 18, 15, 28, 0).unwrap();
+        assert_eq!(
+            codex_reset(
+                "You’ve hit your usage limit. Upgrade to Pro or try again at 3:27 PM.",
+                &observed
+            ),
+            Some(reset.timestamp_millis() as u64)
+        );
+        assert_eq!(
+            codex_reset(
+                "You’ve hit your usage limit. Try again at 3:27 AM.",
+                &observed
+            ),
+            None
+        );
+        assert_eq!(
+            codex_reset("You’ve hit your usage limit. Try again later.", &observed),
+            None
+        );
+        assert_eq!(
+            codex_reset("There is a quota outage. Try again at 3:27 PM.", &observed),
+            None
+        );
     }
 }
 

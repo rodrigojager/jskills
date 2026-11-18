@@ -71,6 +71,13 @@
   }
   window.jtasksTransport={
     ready:false,
+    actions:{
+      stop:()=>runAction('run.stop'),
+      continue:()=>runAction('run.continue'),
+      agentsList:()=>runAction('agents.list'),
+      agentsChoices:(executor,refresh)=>runAction('agents.choices',{executor,refresh:!!refresh}),
+      agentsSet:change=>runAction('agents.set',change),
+    },
     async read(view,fields){
       const ticket=revision, key=context?.key;
       if(!key)throw new Error('Select a local project run');
@@ -90,4 +97,12 @@
       connect();
     }
   };
+  async function runAction(method,fields={}){
+    const ticket=revision, selected=context;
+    if(!selected?.key)throw new Error('Select a local project run');
+    const payload={...fields,key:selected.key,run:selected.run};
+    const result=await window.orca.plugin.request(method,payload,{timeoutMs:15000});
+    if(ticket!==revision)throw new Error('Project changed');
+    return result;
+  }
 })();

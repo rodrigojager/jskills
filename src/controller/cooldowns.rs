@@ -23,8 +23,8 @@ pub struct Scope {
     pub model: Option<String>,
 }
 
-/// Only explicit numeric metadata from a native failure record is trusted.
-/// Natural-language dates/claims and arbitrary stderr never authorize waits.
+/// Timing normalized by the native adapter from a root failure. Agent prose,
+/// helper output, and arbitrary stderr never authorize waits.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Hint {
     pub reset_at_ms: Option<u64>,

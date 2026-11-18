@@ -1,7 +1,8 @@
 //! OpenCode 2.x direct runner. Verified against installed 2.3.0 help and
-//! anomalyco/opencode v2.3.0 packages/cli/src/{run,session-target.ts}.
+//! anomalyco/opencode v2.3.0 packages/cli/src/run/noninteractive.ts.
 //! JSON text/tool/step records have no designated final-result authority.
 use crate::{
+    controller::cooldowns::Hint,
     domain::types::Task,
     storage::{Store, Workspace},
 };
@@ -57,6 +58,8 @@ pub struct Observation {
     pub invalid_records: usize,
     pub protocol_error: Option<String>,
     pub failure_class: Option<String>,
+    #[serde(default)]
+    pub cooldown_hint: Hint,
     pub result_source: Option<String>,
     pub raw_stdout: PathBuf,
     pub raw_stderr: PathBuf,
@@ -402,6 +405,7 @@ fn decode(dir: &Path, task: &str, attempt: &str, review: bool) -> Result<(Observ
         invalid_records: 0,
         protocol_error: None,
         failure_class: None,
+        cooldown_hint: Hint::default(),
         result_source: None,
         raw_stdout: dir.join("stdout.log"),
         raw_stderr: dir.join("stderr.log"),
@@ -447,6 +451,7 @@ fn decode(dir: &Path, task: &str, attempt: &str, review: bool) -> Result<(Observ
             continue;
         }
         let session = value["sessionID"].as_str().filter(|id| session_id(id));
+        let mut exact_root = false;
         if let Some(session) = session {
             if result
                 .session_id
@@ -456,19 +461,42 @@ fn decode(dir: &Path, task: &str, attempt: &str, review: bool) -> Result<(Observ
                 result.protocol_error = Some("conflicting root native session identities".into());
             } else {
                 result.session_id = Some(session.into());
+                exact_root = true;
             }
             if value["part"]
                 .get("sessionID")
                 .is_some_and(|id| id.as_str() != Some(session))
             {
                 result.protocol_error = Some("native part differs from root session".into());
+                exact_root = false;
             }
         } else if kind != "error" {
             result.protocol_error = Some("missing exact native session identity".into());
         }
         if kind == "error" {
-            result.failure_class =
-                Some(super::codex::classify_error(&value["error"].to_string()).into());
+            let error = &value["error"];
+            // The native stderr/log and internal "retry" events grant no
+            // timing evidence. The terminal root error carries provider data.
+            let quota_error = matches!(
+                error["type"].as_str(),
+                Some("provider.quota" | "provider.rate-limit")
+            );
+            let class = if quota_error {
+                "quota_reset_unknown"
+            } else {
+                super::codex::classify_error(&error.to_string())
+            };
+            result.cooldown_hint = Hint {
+                // retryAfterMs is counted from the emitted timestamp, so
+                // observing an older attempt does not extend its deadline.
+                reset_at_ms: if exact_root && quota_error {
+                    quota_deadline(&value)
+                } else {
+                    None
+                },
+                retry_after_ms: None,
+            };
+            result.failure_class = Some(class.into());
             result.protocol_error = Some("native OpenCode run reported an error".into());
         } else if kind == "step_finish" {
             result.step_finishes += 1;
@@ -487,6 +515,12 @@ fn decode(dir: &Path, task: &str, attempt: &str, review: bool) -> Result<(Observ
     }
     result.decoding = reader.provenance();
     Ok((result, review_text))
+}
+
+fn quota_deadline(value: &Value) -> Option<u64> {
+    let timestamp = value["timestamp"].as_u64().filter(|v| *v > 0)?;
+    let deadline = timestamp.checked_add(value["error"]["retryAfterMs"].as_u64()?)?;
+    (deadline <= i64::MAX as u64).then_some(deadline)
 }
 
 pub fn capture_interrupted(workspace: &Workspace, task: &str, attempt: &str) -> Result<()> {

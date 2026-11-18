@@ -7,6 +7,7 @@ use std::{
     collections::BTreeMap,
     io::{Read, Write},
     net::{Ipv4Addr, TcpListener, TcpStream},
+    sync::mpsc::{self, Receiver, TryRecvError},
     time::{Duration, Instant},
 };
 
@@ -16,6 +17,7 @@ struct Connection {
     stream: TcpStream,
     input: Vec<u8>,
     output: Option<Vec<u8>>,
+    catalog: Option<Receiver<Vec<u8>>>,
     written: usize,
     started: Instant,
 }
@@ -25,6 +27,7 @@ pub struct Server {
     workspace: Workspace,
     run: String,
     connections: Vec<Connection>,
+    catalog_jobs: Vec<std::thread::JoinHandle<()>>,
     /// Per-controller page token: embedded in the served page, never in a URL or a log.
     token: String,
     stop: Option<String>,
@@ -38,6 +41,7 @@ impl Server {
             workspace: workspace.clone(),
             run: run.into(),
             connections: Vec::new(),
+            catalog_jobs: Vec::new(),
             token: uuid::Uuid::new_v4().simple().to_string(),
             stop: None,
         })
@@ -56,6 +60,7 @@ impl Server {
     /// Bounded nonblocking socket work in the foreground controller's own loop.
     /// Slow/closed readers are discarded and never become scheduling signals.
     pub fn poll(&mut self) -> Result<()> {
+        self.catalog_jobs.retain(|job| !job.is_finished());
         for _ in self.connections.len()..MAX_CONNECTIONS {
             match self.listener.accept() {
                 Ok((stream, _)) => {
@@ -64,6 +69,7 @@ impl Server {
                         stream,
                         input: Vec::new(),
                         output: None,
+                        catalog: None,
                         written: 0,
                         started: Instant::now(),
                     });
@@ -75,6 +81,19 @@ impl Server {
         let host = self.listener.local_addr()?.to_string();
         let mut reads = 0;
         self.connections.retain_mut(|c| {
+            if let Some(catalog) = &c.catalog {
+                match catalog.try_recv() {
+                    Ok(output) => {
+                        c.catalog = None;
+                        c.output = Some(output);
+                        c.started = Instant::now();
+                    }
+                    Err(TryRecvError::Empty) => {
+                        return c.started.elapsed() < Duration::from_secs(12);
+                    }
+                    Err(TryRecvError::Disconnected) => return false,
+                }
+            }
             if c.started.elapsed() > Duration::from_secs(2) {
                 return false;
             }
@@ -100,16 +119,45 @@ impl Server {
                         host: &host,
                         token: &self.token,
                     };
-                    c.output = Some(match route(&state, &mut self.stop, &c.input) {
-                        Ok(value) => value,
-                        Err(e) => response(
-                            400,
-                            "application/json",
-                            json!({"error":e.to_string(),"read_only":true})
-                                .to_string()
-                                .as_bytes(),
-                        ),
-                    });
+                    match route(&state, &mut self.stop, &c.input) {
+                        Ok(Reply::Immediate(value)) => c.output = Some(value),
+                        Ok(Reply::Catalog { executor, refresh }) => {
+                            if self.catalog_jobs.len() == MAX_CONNECTIONS {
+                                c.output = Some(response(
+                                    503,
+                                    "application/json",
+                                    br#"{"error":"catalog discovery is busy"}"#,
+                                ));
+                                return true;
+                            }
+                            let workspace = self.workspace.clone();
+                            let (send, receive) = mpsc::channel();
+                            let spawned = std::thread::Builder::new()
+                                .name("catalog-discovery".into())
+                                .spawn(move || {
+                                    let output = match crate::cli::configure::choices(
+                                        &workspace, &executor, refresh,
+                                    ) {
+                                        Ok(value) => response(
+                                            200,
+                                            "application/json",
+                                            value.to_string().as_bytes(),
+                                        ),
+                                        Err(error) => bad_request(error),
+                                    };
+                                    let _ = send.send(output);
+                                });
+                            match spawned {
+                                Ok(job) => {
+                                    self.catalog_jobs.push(job);
+                                    c.catalog = Some(receive);
+                                    c.started = Instant::now();
+                                }
+                                Err(error) => c.output = Some(bad_request(error.into())),
+                            }
+                        }
+                        Err(error) => c.output = Some(bad_request(error)),
+                    }
                 }
             }
             if let Some(output) = &c.output {
@@ -129,6 +177,29 @@ impl Server {
         });
         Ok(())
     }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        while let Some(job) = self.catalog_jobs.pop() {
+            let _ = job.join();
+        }
+    }
+}
+
+enum Reply {
+    Immediate(Vec<u8>),
+    Catalog { executor: String, refresh: bool },
+}
+
+fn bad_request(error: anyhow::Error) -> Vec<u8> {
+    response(
+        400,
+        "application/json",
+        json!({"error":error.to_string(),"read_only":true})
+            .to_string()
+            .as_bytes(),
+    )
 }
 
 fn response(status: u16, kind: &str, body: &[u8]) -> Vec<u8> {
@@ -172,7 +243,10 @@ fn json_body(body: &str) -> Result<serde_json::Map<String, serde_json::Value>> {
     }
 }
 
-fn text_field(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> Result<Option<String>> {
+fn text_field(
+    map: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<Option<String>> {
     match map.get(key) {
         None | Some(serde_json::Value::Null) => Ok(None),
         Some(serde_json::Value::String(s)) if !s.trim().is_empty() && s.len() <= 200 => {
@@ -202,7 +276,8 @@ fn post(state: &Posture, stop: &mut Option<String>, path: &str, body: &str) -> R
             return Ok(response(202, "application/json", body.as_bytes()));
         }
         "/api/agents" => {
-            let alias = text_field(&map, "alias")?.ok_or_else(|| anyhow::anyhow!("alias is required"))?;
+            let alias =
+                text_field(&map, "alias")?.ok_or_else(|| anyhow::anyhow!("alias is required"))?;
             crate::cli::configure::set_alias(
                 state.workspace,
                 state.run,
@@ -224,10 +299,14 @@ fn post(state: &Posture, stop: &mut Option<String>, path: &str, body: &str) -> R
             ));
         }
     };
-    Ok(response(200, "application/json", value.to_string().as_bytes()))
+    Ok(response(
+        200,
+        "application/json",
+        value.to_string().as_bytes(),
+    ))
 }
 
-fn route(state: &Posture, stop: &mut Option<String>, bytes: &[u8]) -> Result<Vec<u8>> {
+fn route(state: &Posture, stop: &mut Option<String>, bytes: &[u8]) -> Result<Reply> {
     let (workspace, run, host) = (state.workspace, state.run, state.host);
     let split = bytes
         .windows(4)
@@ -243,7 +322,7 @@ fn route(state: &Posture, stop: &mut Option<String>, bytes: &[u8]) -> Result<Vec
     );
     let writes = parts[0] == "POST";
     if parts[0] != "GET" && !writes {
-        return Ok(forbidden());
+        return Ok(Reply::Immediate(forbidden()));
     }
     let mut hosts = 0;
     let mut supplied = None;
@@ -273,11 +352,28 @@ fn route(state: &Posture, stop: &mut Option<String>, bytes: &[u8]) -> Result<Vec
     }
     ensure!(hosts == 1, "one local Host is required");
     let (path, query) = parts[1].split_once('?').unwrap_or((parts[1], ""));
-    if writes {
-        if foreign || supplied.as_deref() != Some(state.token) {
-            return Ok(forbidden());
+    if writes && (foreign || supplied.as_deref() != Some(state.token)) {
+        return Ok(Reply::Immediate(forbidden()));
+    }
+    if path == "/api/agents/choices" {
+        let executor = if writes {
+            text_field(&json_body(body)?, "executor")?
+        } else {
+            query
+                .split('&')
+                .find_map(|p| p.strip_prefix("executor="))
+                .map(decode)
+                .transpose()?
         }
-        return post(state, stop, path, body);
+        .ok_or_else(|| anyhow::anyhow!("executor is required"))?;
+        crate::executors::catalog::name(&executor)?;
+        return Ok(Reply::Catalog {
+            executor,
+            refresh: writes,
+        });
+    }
+    if writes {
+        return post(state, stop, path, body).map(Reply::Immediate);
     }
     let (kind, page): (&str, Vec<u8>) = match path {
         "/" => (
@@ -288,38 +384,35 @@ fn route(state: &Posture, stop: &mut Option<String>, bytes: &[u8]) -> Result<Vec
         ),
         "/api/agents" => {
             let body = crate::cli::configure::list(workspace, run)?.to_string();
-            return Ok(response(200, "application/json", body.as_bytes()));
+            return Ok(Reply::Immediate(response(
+                200,
+                "application/json",
+                body.as_bytes(),
+            )));
         }
-        "/api/agents/choices" => {
-            let executor = query
-                .split('&')
-                .find_map(|p| p.strip_prefix("executor="))
-                .map(decode)
-                .transpose()?
-                .ok_or_else(|| anyhow::anyhow!("executor is required"))?;
-            let body = crate::cli::configure::choices(workspace, &executor)?.to_string();
-            return Ok(response(200, "application/json", body.as_bytes()));
-        }
-        "/app.js" => ("text/javascript", include_bytes!("../../web/app.js").to_vec()),
+        "/app.js" => (
+            "text/javascript",
+            include_bytes!("../../web/app.js").to_vec(),
+        ),
         "/style.css" => ("text/css", include_bytes!("../../web/style.css").to_vec()),
         "/presentation.json" => {
             let body = serde_json::to_vec(&super::i18n::presentation())?;
-            return Ok(response(200, "application/json", &body));
+            return Ok(Reply::Immediate(response(200, "application/json", &body)));
         }
         "/api/read" => {
             let request = request(run, query)?;
             let body = serde_json::to_vec(&projections::read(workspace, &request)?)?;
-            return Ok(response(200, "application/json", &body));
+            return Ok(Reply::Immediate(response(200, "application/json", &body)));
         }
         _ => {
-            return Ok(response(
+            return Ok(Reply::Immediate(response(
                 404,
                 "application/json",
                 br#"{"error":"unknown read route"}"#,
-            ));
+            )));
         }
     };
-    Ok(response(200, kind, &page))
+    Ok(Reply::Immediate(response(200, kind, &page)))
 }
 fn decode(text: &str) -> Result<String> {
     let mut bytes = Vec::new();

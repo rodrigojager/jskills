@@ -12,7 +12,6 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     io::{self, BufRead, Write},
-    time::Duration,
 };
 
 #[derive(Args)]
@@ -29,6 +28,9 @@ pub struct Configure {
     /// Models and efforts offered for an agent.
     #[arg(long, value_name = "EXECUTOR")]
     pub choices: Option<String>,
+    /// Refresh the native catalog immediately, bypassing its cache lifetime.
+    #[arg(long, requires = "choices")]
+    pub refresh: bool,
     #[arg(long, visible_alias = "agent")]
     pub executor: Option<String>,
     #[arg(long)]
@@ -120,27 +122,31 @@ pub fn list(workspace: &Workspace, run: &str) -> Result<Value> {
     Ok(json!({"run":run,"aliases":aliases}))
 }
 
-fn catalogue(workspace: &Workspace, executor: &str) -> Result<Option<catalog::Snapshot>> {
-    let scope = catalog::scope(workspace, executor, &[], "native-default");
-    let cached = catalog::read(workspace, executor, &scope)?;
-    if cached.as_ref().is_some_and(|s| s.observed_at != 0) {
-        return Ok(cached);
-    }
-    // A missing cache is refreshed once, inside the existing bounded refresh.
-    let refreshed = catalog::refresh(executor, scope, Duration::from_millis(3000), None)
-        .and_then(|snapshot| catalog::save(workspace, snapshot, false));
-    Ok(refreshed.ok().or(cached))
-}
-
-pub fn choices(workspace: &Workspace, executor: &str) -> Result<Value> {
-    catalog::name(executor)?;
+pub fn choices(workspace: &Workspace, executor: &str, refresh: bool) -> Result<Value> {
     let mut models: Vec<String> = vec![];
     let mut in_use: Vec<String> = vec![];
     let mut model_options = vec![];
     let mut providers = vec![];
     let mut effort_options = vec![];
-    let available = match catalogue(workspace, executor)? {
-        Some(snapshot) if snapshot.observed_at != 0 => {
+    let snapshot = catalog::default_choices(workspace, executor, refresh)?;
+    if let Some(snapshot) = &snapshot {
+        if refresh {
+            ensure!(
+                snapshot.availability == "available_partial",
+                "catalog discovery failed: {}",
+                snapshot.availability
+            );
+            ensure!(
+                matches!(snapshot.metadata_status.as_str(), "observed" | "partial")
+                    || (executor == "claude"
+                        && snapshot.metadata_status == "native_interface_unavailable"),
+                "catalog discovery failed: {}",
+                snapshot.metadata_status
+            );
+        }
+    }
+    let available = match snapshot {
+        Some(snapshot) if snapshot.availability == "available_partial" => {
             for choice in snapshot.choices.iter().filter(|c| c.field == "model") {
                 if !models.contains(&choice.value) {
                     models.push(choice.value.clone());
@@ -295,7 +301,7 @@ pub fn set_alias(
 
 pub fn execute(workspace: &Workspace, args: Configure) -> Result<i32> {
     if let Some(executor) = &args.choices {
-        println!("{}", choices(workspace, executor)?);
+        println!("{}", choices(workspace, executor, args.refresh)?);
         return Ok(0);
     }
     let run = match projections::resolve_current(workspace, args.run.clone()) {
@@ -392,7 +398,7 @@ fn menu(
     let Some(executor) = ask(input, out, "Agent (claude, codex, opencode):")? else {
         return cancelled(out);
     };
-    let offered = choices(workspace, &executor)?;
+    let offered = choices(workspace, &executor, false)?;
     writeln!(
         out,
         "Models ({}): {}",

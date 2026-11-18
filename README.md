@@ -175,7 +175,11 @@ Apply holds writer/index guards, uses an isolated index and compare-and-swap of 
 
 ## Configuration, autonomy and resources
 
-`profiles`, `executors`, `catalog` and `doctor` distinguish jtasks aliases, native settings, cached capabilities and actual account access. Inspection/doctor do not invoke models or install/repair anything. Catalog refresh is explicit and scoped. Known-invalid choices are rejected; unknown choices require an attributable exception. No silent model/provider fallback is implied.
+`profiles`, `executors`, `catalog` and `doctor` distinguish jtasks aliases, native settings, cached capabilities and actual account access. Inspection and validation read the cache without launching an agent. Known-invalid choices are rejected; unknown choices require an attributable exception. No silent model/provider fallback is implied.
+
+The Agents editor and `jtasks configure --choices <agent>` reuse native catalog results for 30 minutes. The first request after expiry queries the native catalog again, picking up changes to available providers and models. Failed probes are cached for two minutes. Use **Refresh catalog** in the Agents editor on the dashboard or in Orca, or run `jtasks configure --choices opencode --refresh` (also accepts `codex` and `claude`) to check immediately. These checks do not start a model turn. An explicitly imported snapshot is kept until it is replaced through an explicit refresh or import.
+
+When a task stops on a native quota error with usable reset information, the controller can retry after the indicated deadline under the run's infrastructure retry policy. Claude Code uses its structured reset event, Codex uses the time in its native usage-limit error, and OpenCode uses the delay in its terminal provider error. A quota stop without usable timing still requires intervention.
 
 Tasks and execution observers use the same selection fields. For example, use
 `{"agent":"opencode","provider":"company-ai","model":"vendor/model","variant":"priority"}`

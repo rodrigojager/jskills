@@ -21,6 +21,8 @@ const FIELDS: [&str; 6] = [
     "native_profile",
     "native_agent",
 ];
+const NATIVE_TTL: u64 = 30 * 60;
+const FAILED_REFRESH_TTL: u64 = 2 * 60;
 pub fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -114,6 +116,22 @@ pub struct Snapshot {
 }
 fn metadata_unavailable() -> String {
     "not_requested".into()
+}
+impl Snapshot {
+    pub fn expires_at(&self) -> u64 {
+        if matches!(self.source, Source::ExplicitSnapshot) {
+            return self.recommended_refresh_at;
+        }
+        let ttl = if matches!(self.source, Source::NativeMetadata)
+            || (self.executor == "claude" && self.metadata_status == "native_interface_unavailable")
+        {
+            NATIVE_TTL
+        } else {
+            FAILED_REFRESH_TTL
+        };
+        self.recommended_refresh_at
+            .min(self.observed_at.saturating_add(ttl))
+    }
 }
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -282,8 +300,7 @@ pub fn save(workspace: &Workspace, mut snapshot: Snapshot, explicit: bool) -> Re
         .read(true)
         .write(true)
         .open(parent.join("catalog.lock"))?;
-    lock.try_lock()
-        .context("another catalog refresh is in progress")?;
+    lock.lock().context("could not lock the catalog cache")?;
     let mut cache = cache(workspace)?;
     cache
         .snapshots
@@ -309,6 +326,49 @@ pub fn scope(
         launcher_args: launcher_args.to_vec(),
         configuration: configuration.into(),
     }
+}
+
+/// Keep native discovery behind an expiry check and coalesce concurrent probes
+/// for the same executor. A read or validation never starts discovery itself.
+pub fn default_choices(
+    workspace: &Workspace,
+    executor: &str,
+    force: bool,
+) -> Result<Option<Snapshot>> {
+    name(executor)?;
+    let scope = scope(workspace, executor, &[], "native-default");
+    let is_reusable = |snapshot: &Snapshot| {
+        matches!(snapshot.source, Source::ExplicitSnapshot)
+            || (snapshot
+                .provider_scope
+                .as_deref()
+                .is_none_or(|p| p == "native-default")
+                && now() < snapshot.expires_at())
+    };
+    let cached = read(workspace, executor, &scope)?;
+    if !force && cached.as_ref().is_some_and(is_reusable) {
+        return Ok(cached);
+    }
+    let directory = workspace.data.join("config");
+    fs::create_dir_all(&directory)?;
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(directory.join(format!("catalog-{executor}.lock")))?;
+    if let Err(error) = lock.try_lock() {
+        if !force && matches!(error, std::fs::TryLockError::WouldBlock) {
+            return Ok(cached);
+        }
+        return Err(error).context("could not acquire catalog discovery lock");
+    }
+    let cached = read(workspace, executor, &scope)?;
+    if !force && cached.as_ref().is_some_and(is_reusable) {
+        return Ok(cached);
+    }
+    let snapshot = refresh(executor, scope, Duration::from_secs(3), None)?;
+    Ok(Some(save(workspace, snapshot, false)?))
 }
 pub fn unavailable(executor: &str, scope: Scope) -> Snapshot {
     Snapshot {
@@ -756,7 +816,7 @@ pub fn refresh(
     );
     let mut snapshot = unavailable(executor, scope);
     snapshot.observed_at = now();
-    snapshot.recommended_refresh_at = now() + 86400;
+    snapshot.recommended_refresh_at = snapshot.observed_at + NATIVE_TTL;
     let result = (|| -> std::result::Result<(), &'static str> {
         let output = probe(
             command(executor, &snapshot.scope).map_err(|_| "unsupported_launcher")?,
@@ -845,6 +905,7 @@ pub fn refresh(
             .unknown_fields
             .retain(|field| !snapshot.complete.contains(field));
     }
+    snapshot.recommended_refresh_at = snapshot.expires_at();
     Ok(snapshot)
 }
 
@@ -887,7 +948,9 @@ pub fn validate_values(
         executor,
         &scope(workspace, executable, &launcher_args, configuration),
     )?;
-    if let Some(catalog) = &snapshot {
+    if let Some(catalog) = &snapshot
+        && (matches!(catalog.source, Source::ExplicitSnapshot) || now() < catalog.expires_at())
+    {
         ensure!(
             ![
                 "executable_missing",
@@ -917,7 +980,7 @@ pub fn validate_values(
         };
         let advertised = executor == "codex"
             && snapshot.as_ref().is_some_and(|catalog| {
-                now() < catalog.recommended_refresh_at
+                now() < catalog.expires_at()
                     && catalog
                         .choices
                         .iter()
@@ -960,8 +1023,9 @@ pub fn validate_values(
         ensure!(selector(value), "known-invalid {field} selector");
         let mut known = false;
         if let Some(catalog) = &snapshot {
+            let fresh = now() < catalog.expires_at();
             ensure!(
-                !catalog
+                !(fresh || matches!(catalog.source, Source::ExplicitSnapshot)) || !catalog
                     .known_invalid
                     .iter()
                     .any(|c| matches(c, field, value, values)),
@@ -971,10 +1035,7 @@ pub fn validate_values(
                 values["provider"].as_str() == Some(p)
                     || (p == "native-default" && values["provider"].is_null())
             });
-            if relevant
-                && now() < catalog.recommended_refresh_at
-                && catalog.availability == "available_partial"
-            {
+            if relevant && fresh && catalog.availability == "available_partial" {
                 known = catalog
                     .choices
                     .iter()

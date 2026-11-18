@@ -96,7 +96,11 @@ fn stop_and_agents_need_the_page_token_and_origin() {
     let set = json!({"alias":"standard","model":"model-two","actor":"web-test"});
 
     // Refused: no token, another token, another origin, another method; nothing changes.
-    for (path, body) in [("/api/stop", json!({"actor":"x"})), ("/api/agents", set.clone())] {
+    for (path, body) in [
+        ("/api/stop", json!({"actor":"x"})),
+        ("/api/agents", set.clone()),
+        ("/api/agents/choices", json!({"executor":"opencode"})),
+    ] {
         assert_eq!(post(&mut server, path, "", &body).0, 403);
         assert_eq!(post(&mut server, path, &own("wrong"), &body).0, 403);
         assert_eq!(post(&mut server, path, &origin("http://evil.example"), &body).0, 403);

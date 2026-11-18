@@ -107,6 +107,75 @@ fn reads_do_not_probe_create_or_change_any_cached_bytes() {
 }
 
 #[test]
+fn configure_reuses_native_catalog_until_expiry_and_can_bypass_it() {
+    let f = Fixture::new();
+    let metadata = f.root.join("models.txt");
+    let calls = f.root.join("calls.txt");
+    #[cfg(windows)]
+    fs::write(
+        f.root.join("opencode.ps1"),
+        r#"
+switch ($args[0]) {
+    '--version' { '2.3.0' }
+    'run' { '--model' }
+    'models' { Add-Content calls.txt probe; Get-Content models.txt }
+    default { exit 1 }
+}
+"#,
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let executable = f.root.join("opencode");
+        fs::write(&executable, "#!/bin/sh\ncase \"$1\" in\n--version) echo 2.3.0;;\nrun) echo --model;;\nmodels) echo probe >> calls.txt; cat models.txt;;\n*) exit 1;;\nesac\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let path = std::env::join_paths(
+        std::iter::once(f.root.clone())
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let choices = |force: bool| {
+        let mut command = f.command();
+        command
+            .env("PATH", &path)
+            .env("JTASKS_CONFIG_HOME", f.root.join("isolated-user"));
+        command.args(["configure", "--choices", "opencode"]);
+        if force {
+            command.arg("--refresh");
+        }
+        let result = command.output().unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        serde_json::from_slice::<Value>(&result.stdout).unwrap()["models"].clone()
+    };
+
+    fs::write(&metadata, "p/first\n").unwrap();
+    assert_eq!(choices(false), json!(["first"]));
+    fs::write(&metadata, "p/second\n").unwrap();
+    assert_eq!(choices(false), json!(["first"]));
+    assert_eq!(fs::read_to_string(&calls).unwrap().lines().count(), 1);
+    assert_eq!(choices(true), json!(["second"]));
+    assert_eq!(choices(false), json!(["second"]));
+
+    let catalog = f.data.join("config/catalog.json");
+    let mut cached: Value = serde_json::from_slice(&fs::read(&catalog).unwrap()).unwrap();
+    let cached_snapshot = &mut cached["snapshots"][0];
+    let observed = cached_snapshot["observed_at"].as_u64().unwrap();
+    assert_eq!(cached_snapshot["recommended_refresh_at"], observed + 1800);
+    cached_snapshot["observed_at"] = json!(observed - 1801);
+    fs::write(catalog, serde_json::to_vec(&cached).unwrap()).unwrap();
+    fs::write(metadata, "p/third\n").unwrap();
+    assert_eq!(choices(false), json!(["third"]));
+    assert_eq!(choices(false), json!(["third"]));
+    assert_eq!(fs::read_to_string(calls).unwrap().lines().count(), 3);
+}
+
+#[test]
 fn complete_cached_catalog_validates_without_inventing_account_access() {
     let f = Fixture::new();
     save(&f, "codex", &snapshot(&f, "codex"));

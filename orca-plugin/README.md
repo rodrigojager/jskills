@@ -53,7 +53,7 @@ In the **Agents** editor, worker and observer aliases each have their own
 agent, provider, model and reasoning settings. Select Codex, Claude Code
 or OpenCode. The OpenCode choice appears as **Variant** and accepts names
 from the selected provider and model, including those configured in OpenCode
-outside its built-in catalog.
+outside its built-in catalog. Use **Refresh catalog** in the Agents editor to fetch the selected agent's current model list without discarding your edits. Ordinary requests reuse the native catalog for up to 30 minutes.
 
 ## Updates
 

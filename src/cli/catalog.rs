@@ -20,7 +20,7 @@ pub struct Catalog {
     pub executable: Option<String>,
     #[arg(long, allow_hyphen_values = true)]
     pub launcher_arg: Vec<String>,
-    /// Caller-managed configuration identity (change it after native config edits).
+    /// Optional identity for an independently cached configuration.
     #[arg(long, default_value = "native-default")]
     pub scope: String,
     #[arg(long, default_value_t=3000, value_parser=clap::value_parser!(u64).range(50..=10000))]
@@ -41,7 +41,7 @@ pub struct Catalog {
 pub fn view(snapshot: Snapshot) -> Value {
     let freshness = if snapshot.observed_at == 0 {
         "unavailable"
-    } else if catalog::now() >= snapshot.recommended_refresh_at {
+    } else if catalog::now() >= snapshot.expires_at() {
         "stale"
     } else {
         "cached_fresh"

@@ -223,7 +223,7 @@ function projectTabs(tasks,control) {
 //   actions.stop()                  -> ask the run's controller to stop
 //   actions.continue()              -> open or focus the terminal that continues the run (Orca only)
 //   actions.agentsList()            -> {run, aliases:[{alias, role, tasks, states, configuration, source}]}
-//   actions.agentsChoices(executor) -> {executor, catalogue, models, in_use, efforts, free_text}
+//   actions.agentsChoices(executor, refresh?) -> {executor, catalogue, models, in_use, efforts, free_text}
 //   actions.agentsSet({alias, executor?, provider?, model?, effort?})
 const EXECUTORS = ['claude', 'codex', 'opencode'];
 function browserActions() {
@@ -239,7 +239,9 @@ function browserActions() {
   return {
     stop: () => call('/api/stop', {}),
     agentsList: () => call('/api/agents'),
-    agentsChoices: executor => call(`/api/agents/choices?${new URLSearchParams({executor})}`),
+    agentsChoices: (executor, refresh) => refresh
+      ? call('/api/agents/choices', {executor})
+      : call(`/api/agents/choices?${new URLSearchParams({executor})}`),
     agentsSet: change => call('/api/agents', change),
   };
 }
@@ -325,7 +327,7 @@ async function agentsDialog(control, opener) {
   loading.remove();
   const running = control.controller === 'live';
   body.append(el('p', `Each name is an alias the tasks point to. A change applies to every task that has not started yet${running ? '; running tasks keep the agent they started with' : ''}. Finished tasks keep their history.`));
-  const choicesCache = new Map(), rows = [], fallback = {models: [], efforts: [], free_text: true};
+  const choicesCache = new Map(), refreshes = new Map(), rows = [], fallback = {models: [], efforts: [], free_text: true};
   const customModel = 'Custom model…';
   const choices = executor => {
     if (!choicesCache.has(executor)) choicesCache.set(executor, control.actions.agentsChoices ? control.actions.agentsChoices(executor).catch(() => fallback) : Promise.resolve(fallback));
@@ -349,6 +351,29 @@ async function agentsDialog(control, opener) {
     fill(agent, EXECUTORS, cfg.executor);
     const row = {alias: a};
     let catalogue = fallback;
+    const refreshStatus = el('span', undefined, 'muted'); refreshStatus.setAttribute('role', 'status');
+    const refreshCatalog = button('Refresh catalog', async () => {
+      const selected = agent.value;
+      refreshCatalog.disabled = true;
+      refreshStatus.textContent = 'Refreshing…';
+      try {
+        if (!refreshes.has(selected)) {
+          const request = control.actions.agentsChoices(selected, true).then(fresh => {
+            choicesCache.set(selected, Promise.resolve(fresh));
+            rows.forEach(r => r.updateCatalogue(selected, fresh));
+            summarize();
+            return fresh;
+          }).finally(() => refreshes.delete(selected));
+          refreshes.set(selected, request);
+        }
+        const fresh = await refreshes.get(selected);
+        if (agent.value === selected) refreshStatus.textContent = fresh.models.length ? 'Catalog refreshed.' : 'Checked. No model list available.';
+      } catch (err) {
+        if (agent.value === selected) refreshStatus.textContent = `Could not refresh: ${err.message}`;
+      } finally { if (agent.value === selected) refreshCatalog.disabled = false; }
+    });
+    refreshCatalog.disabled = true;
+    refreshCatalog.setAttribute('aria-label', `Refresh catalog for ${a.alias}`);
     row.value = () => ({executor: agent.value, model: freeModel.hidden ? model.value : freeModel.value.trim(), effort: variant.hidden ? effort.value : variant.value.trim(), provider: provider.value.trim()});
     function refreshModels(current) {
       const options = catalogue.model_options || [], selectedProvider = provider.value.trim();
@@ -359,7 +384,7 @@ async function agentsDialog(control, opener) {
       model.hidden = !models.length;
       freeModel.hidden = !!models.length;
       if (!models.length) freeModel.value = current || '';
-      else fill(model, [...models, customModel], current || undefined);
+      else fill(model, [...(current === '' ? [''] : []), ...models, customModel], current || undefined);
     }
     function refreshEfforts(current) {
       const v = row.value();
@@ -368,14 +393,25 @@ async function agentsDialog(control, opener) {
       fill(effort, ['', ...levels], current || undefined);
       return levels;
     }
+    row.updateCatalogue = (selected, fresh) => {
+      if (agent.value !== selected) return;
+      const current = row.value();
+      catalogue = fresh;
+      fill(providerOptions, fresh.providers || []);
+      refreshModels(current.model);
+      refreshEfforts(current.effort);
+    };
     row.dirty = () => {
       const v = row.value(), mark = (n, now, was) => n.classList.toggle('changed', now !== (was || ''));
       mark(agent, v.executor, cfg.executor); mark(model, v.model, cfg.model); mark(freeModel, v.model, cfg.model); mark(effort, v.effort, cfg.effort); mark(variant, v.effort, cfg.effort); mark(provider, v.provider, cfg.provider);
       return v.executor !== (cfg.executor || '') || v.model !== (cfg.model || '') || v.effort !== (cfg.effort || '') || v.provider !== (cfg.provider || '');
     };
+    let loadRevision = 0;
     row.load = async () => {
-      const selected = agent.value, c = await choices(selected), same = selected === cfg.executor;
-      if (agent.value !== selected) return;
+      const revision = ++loadRevision, selected = agent.value, same = selected === cfg.executor;
+      refreshCatalog.disabled = true;
+      const c = await choices(selected);
+      if (revision !== loadRevision) return;
       catalogue = c;
       provider.value = same ? cfg.provider || '' : '';
       fill(providerOptions, c.providers || []);
@@ -387,13 +423,18 @@ async function agentsDialog(control, opener) {
       const levels = refreshEfforts(same && !openCode ? cfg.effort : undefined);
       if (!same && selected === 'codex' && levels.includes('medium')) effort.value = 'medium';
       variant.value = same && openCode ? cfg.effort || '' : '';
+      refreshCatalog.disabled = false;
       summarize();
     };
-    agent.onchange = () => row.load();
+    agent.onchange = () => { refreshStatus.textContent = ''; row.load(); };
     model.oninput = () => { freeModel.hidden = model.value !== customModel; refreshEfforts(effort.value); summarize(); };
     provider.onchange = () => { refreshModels(row.value().model); refreshEfforts(effort.value); summarize(); };
     for (const n of [effort, variant, provider, freeModel]) n.oninput = summarize;
     box.append(head, fields);
+    if (control.actions.agentsChoices) {
+      const catalogActions = el('div', undefined, 'dialog-actions');
+      catalogActions.append(refreshStatus, refreshCatalog); box.append(catalogActions);
+    }
     const states = Object.entries(a.states || {}).map(([k, n]) => `${n} ${human(k)}`).join(', ');
     if (states) box.append(el('div', states, 'effect'));
     body.append(box); rows.push(row);
@@ -565,5 +606,6 @@ async function start() {
 if (window.jtasksTransport) {
   window.jtasksTransport.attach({refresh:()=>load(false),reset:()=>{
     generation++;busy=false;main.replaceChildren();identity.replaceChildren();error.hidden=true;connection.textContent='Reading project context…';
+    document.querySelector('dialog.dialog[open]')?.close();
   }});
 } else start();

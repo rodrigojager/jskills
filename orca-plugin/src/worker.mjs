@@ -127,8 +127,14 @@ export function createService(orca, {runtime = runtimeManager(), read = readProj
   const invalid=message=>Object.assign(new Error(message),{code:'invalid_params'});
   const text=(value,name,max=512)=>{if(typeof value!=='string' || !value || value.length>max || value.includes('\0'))throw invalid(`Invalid ${name}`);return value;};
   const exact=(input,allowed)=>{if(!input || typeof input!=='object' || Array.isArray(input) || Object.keys(input).some(key=>!allowed.includes(key)))throw invalid('Invalid request');return input;};
-  // The active local workspace and the CLI, resolved fresh for every control request.
-  async function target() {
+  async function target(key,run) {
+    if(key!==undefined){
+      const snapshot=active;
+      if(!snapshot || key!==snapshot.key || (run!==undefined && run!==snapshot.run))throw conflict();
+      await current(snapshot);
+      if(active?.key!==key)throw conflict();
+      return {root:snapshot.root,cli:{executable:snapshot.executable},dataDir};
+    }
     const workspace=await focused();
     if(!workspace)throw Object.assign(new Error('Open a local project in Orca first.'),{code:'no_context'});
     if(!local(workspace))throw Object.assign(new Error('Remote and WSL workspaces are not supported.'),{code:'unsupported_remote'});
@@ -146,7 +152,7 @@ export function createService(orca, {runtime = runtimeManager(), read = readProj
     return all;
   }
   async function stopRun(input) {
-    exact(input,['run']);const run=text(input.run,'run'),t=await target();await known(t,run);
+    exact(input,['run','key']);const run=text(input.run,'run'),t=await target(input.key,run);await known(t,run);
     const result=await cliJson(t,['stop','--run',run,'--actor','orca-panel'],{accept:[0,3]});
     if(result.code===3)return {state:'already_stopped',message:'The run is already stopped.'};
     return {state:'stopping',message:'Stop requested. The controller ends the run at the next safe point.'};
@@ -154,7 +160,7 @@ export function createService(orca, {runtime = runtimeManager(), read = readProj
   const quote=value=>/^[A-Za-z0-9_.\/:\\@+=-]+$/.test(value)?value:`"${value.replace(/"/g,'\\"')}"`;
   const continueCommand=(t,run)=>[quote(t.cli.executable),'--root',quote(t.root),'run','--run',quote(run)].join(' ');
   async function continueRun(input) {
-    exact(input,['run']);const run=text(input.run,'run'),t=await target(),all=await known(t,run);
+    exact(input,['run','key']);const run=text(input.run,'run'),t=await target(input.key,run),all=await known(t,run);
     // One foreground controller owns a checkout (ADR-0001): refuse with the CLI's own reason.
     if(all.some(r=>r.controller==='live'))return {state:'refused',message:'another foreground controller owns this checkout'};
     const title=`jtasks · ${run}`,command=continueCommand(t,run);
@@ -165,11 +171,16 @@ export function createService(orca, {runtime = runtimeManager(), read = readProj
   }
   const runFlag=run=>run===undefined?[]:['--run',text(run,'run')];
   async function agents(input,build) {
-    const t=await target();return parse((await cliJson(t,build(input))).stdout);
+    const t=await target(input.key,input.run);return parse((await cliJson(t,build(input))).stdout);
   }
-  const agentsList=input=>agents(exact(input ?? {},['run']),i=>['configure',...runFlag(i.run),'--list','--json']);
-  const agentsChoices=input=>agents(exact(input,['executor']),i=>['configure','--choices',text(i.executor,'executor',64),'--json']);
-  const agentsSet=input=>agents(exact(input,['alias','executor','provider','model','effort','run']),i=>{
+  const agentsList=input=>agents(exact(input ?? {},['run','key']),i=>['configure',...runFlag(i.run),'--list','--json']);
+  const agentsChoices=input=>agents(exact(input,['executor','refresh','run','key']),i=>{
+    if(i.refresh!==undefined && typeof i.refresh!=='boolean')throw new Error('refresh must be a boolean');
+    const args=['configure','--choices',text(i.executor,'executor',64),'--json'];
+    if(i.refresh)args.push('--refresh');
+    return args;
+  });
+  const agentsSet=input=>agents(exact(input,['alias','executor','provider','model','effort','run','key']),i=>{
     const args=['configure',...runFlag(i.run),'--set',text(i.alias,'alias',128)];
     for(const key of ['executor','provider','model','effort'])if(i[key]!==undefined)args.push(`--${key}`,text(i[key],key,256));
     return [...args,'--actor','orca-panel','--json'];

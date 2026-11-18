@@ -454,3 +454,121 @@ fn native_metadata_needs_rejected_exact_session_and_current_quota_context() {
     let (o, _) = jtasks::executors::claude::observe(&dir, "A", "attempt").unwrap();
     assert!(!o.cooldown_hint.explicit());
 }
+
+#[test]
+fn codex_and_opencode_native_quota_errors_persist_timed_recovery() {
+    let f = Fixture::new();
+    // Match the real native runner envelopes, using bounded, deterministic
+    // local emitters instead of spending provider quotas during the test.
+    let codex_reset = chrono::Local::now() + chrono::TimeDelta::hours(2);
+    let message = format!(
+        "You’ve hit your usage limit. Try again at {}th, {}.",
+        codex_reset.format("%b %-d"),
+        codex_reset.format("%Y %-I:%M %p"),
+    );
+    let open_timestamp = jtasks::controller::admission::now_ms();
+    let open_delay = 7_100_000;
+    let session = "ses_e1084f09cffeIZChByMMw5K1uu";
+    let cases = [
+        (
+            "codex",
+            vec![
+                json!({"type":"thread.started","thread_id":"exact-codex-thread"}),
+                json!({"type":"error","message":message}),
+                json!({"type":"turn.failed","error":{"message":"turn failed"}}),
+            ],
+        ),
+        (
+            "opencode",
+            vec![
+                json!({"type":"step_start","sessionID":session}),
+                json!({"type":"error","sessionID":session,"timestamp":open_timestamp,
+                   "error":{"type":"provider.quota","message":"Usage limit","status":429,
+                            "retryAfterMs":open_delay}}),
+            ],
+        ),
+    ];
+    let tasks = cases
+        .into_iter()
+        .map(|(kind, records)| {
+            let path = f.root.join(format!("{kind}.jsonl"));
+            let wire = records.iter().map(Value::to_string).collect::<Vec<_>>().join("\n");
+            fs::write(&path, format!("{wire}\n")).unwrap();
+            let mut executor = json!({"kind":kind,"permissions":"restricted","executable":"python",
+                "launcher_args":["-c","import sys; from pathlib import Path; sys.stdout.buffer.write(Path(sys.argv[1]).read_bytes()); sys.exit(1)",path]});
+            if kind == "opencode" {
+                executor["provider"] = json!("fixture");
+                executor["model"] = json!("fixture-model");
+            }
+            json!({"id":kind,"title":kind,
+                "unknown_capabilities":{"actor":"cooldown-test","reason":"Native protocol emitter"},
+                "executor":executor})
+        })
+        .collect::<Vec<_>>();
+    f.import(json!(tasks));
+    let mut child = f
+        .command()
+        .args(["run", "--run", "demo"])
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let status = f.await_status(|value| {
+        value["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["cooldown"]["latest"]["state"] == "waiting")
+    });
+    assert!(f.call(&["stop", "--run", "demo"]).status.success());
+    assert_eq!(child.wait().unwrap().code(), Some(3));
+
+    for task in status["tasks"].as_array().unwrap() {
+        let latest = &task["cooldown"]["latest"];
+        let expected = if task["id"] == "codex" {
+            (codex_reset.timestamp_millis() as u64 / 60_000 + 1) * 60_000
+        } else {
+            open_timestamp + open_delay
+        };
+        assert_eq!(latest["source"], "provider_reset");
+        assert_eq!(latest["due_ms"], expected, "{}", task["id"]);
+        assert_eq!(task["attempts"].as_array().unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn opencode_requires_terminal_quota_timing_from_the_root_session() {
+    let f = Fixture::new();
+    let dir = f.root.join("observe");
+    fs::create_dir_all(&dir).unwrap();
+    let session = "ses_root";
+    let start = json!({"type":"step_start","sessionID":session});
+    let native_error = json!({
+        "type":"error","timestamp":2000000000000_u64,"sessionID":session,
+        "error":{"type":"provider.rate-limit","status":429,"retryAfterMs":90000}
+    });
+    let fails = [
+        ("missing timing", "error", session, Value::Null, false),
+        (
+            "different session",
+            "error",
+            "ses_other",
+            json!(90000),
+            false,
+        ),
+        ("internal retry", "retry", session, json!(90000), false),
+        ("terminal rate limit", "error", session, json!(90000), true),
+    ];
+    for (label, kind, id, delay, expected) in fails {
+        let mut record = native_error.clone();
+        record["type"] = json!(kind);
+        record["sessionID"] = json!(id);
+        record["error"]["retryAfterMs"] = delay;
+        fs::write(dir.join("stdout.log"), format!("{start}\n{record}\n")).unwrap();
+        let observation = jtasks::executors::opencode::observe(&dir, "A", "attempt").unwrap();
+        assert_eq!(
+            observation.cooldown_hint.reset_at_ms,
+            expected.then_some(2_000_000_090_000),
+            "{label}",
+        );
+    }
+}

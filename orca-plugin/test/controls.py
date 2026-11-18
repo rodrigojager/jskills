@@ -15,7 +15,7 @@ from playwright.sync_api import sync_playwright, expect
 web, shots = map(Path, sys.argv[1:])
 shots.mkdir(parents=True, exist_ok=True)
 TOKEN = 'fixture-token'
-STATE = {'controller': 'live', 'stopped': 0, 'sets': [], 'posts_without_token': 0}
+STATE = {'controller': 'live', 'stopped': 0, 'sets': [], 'refreshes': [], 'posts_without_token': 0}
 TASKS = [
     {'id': 'G1', 'deliverable': 'the parity reference', 'state': 'completed'},
     {'id': 'G4', 'deliverable': 'the image side', 'state': 'running'},
@@ -98,6 +98,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == '/api/agents':
             STATE['sets'].append(body)
             return self.send(200, {'alias': body['alias']})
+        if self.path == '/api/agents/choices':
+            executor = body['executor']
+            STATE['refreshes'].append(executor)
+            choices = CHOICES[executor]
+            return self.send(200, {**choices, 'models': [*choices['models'], 'new-model']})
         self.send(404, {'error': 'unknown'})
 
 
@@ -111,7 +116,7 @@ let renderer;window.jtasksTransport={ready:true,
  async read(view,fields){const r=await fetch('/api/read?'+new URLSearchParams({view,...fields}));const d=await r.json();if(!r.ok)throw new Error(d.error);return d;},
  attach(x){renderer=x;x.refresh();},
  actions:{CONTINUE_PLACEHOLDER
-  stop:()=>call('/api/stop',{}),agentsList:()=>call('/api/agents'),agentsChoices:e=>call('/api/agents/choices?executor='+e),agentsSet:c=>call('/api/agents',c)}};})();"""
+  stop:()=>call('/api/stop',{}),agentsList:()=>call('/api/agents'),agentsChoices:(e,r)=>r?call('/api/agents/choices',{executor:e}):call('/api/agents/choices?executor='+e),agentsSet:c=>call('/api/agents',c)}};})();"""
 CONTINUE = "continue:async()=>({message:'Opened Orca terminal jtasks · megalinter-parity running jtasks run.'}),"
 
 LIGHT = "document.documentElement.style.cssText='--orca-background:#ffffff;--orca-foreground:#171717;--orca-card:#f7f7f7;--orca-secondary:#efefef;--orca-muted:#efefef;--orca-muted-foreground:#666;--orca-primary:#171717;--orca-primary-foreground:#fff;--orca-accent:#efefef;--orca-destructive:#dc2626;--orca-border:#e2e2e2;--orca-input:#fff;color-scheme:light';document.documentElement.dataset.tone='light'"
@@ -180,6 +185,10 @@ try:
         expect(editor.get_by_role('button', name='Save')).to_be_disabled()
         editor.get_by_label('Model of deep').select_option('claude-sonnet-5-5')
         expect(editor.get_by_label('Model of deep')).to_have_class('changed')
+        editor.get_by_role('button', name='Refresh catalog for deep').click()
+        expect(editor.get_by_label('Model of deep').locator('option[value=new-model]')).to_have_count(1)
+        expect(editor.get_by_label('Model of deep')).to_have_value('claude-sonnet-5-5')
+        assert STATE['refreshes'] == ['claude']
         expect(editor.locator('#summary, .effect[role=status]')).to_contain_text('deep will change. It applies to 2 tasks that have not started; 1 running keeps the agent it started with.')
         editor.get_by_label('Agent of standard').select_option('codex')
         expect(editor.get_by_label('Model of standard')).to_have_value('gpt-6.1-sol')
@@ -252,6 +261,9 @@ try:
             expect(editor).not_to_contain_text('running tasks keep')
             assert editor.evaluate('d=>d.scrollWidth<=d.clientWidth')
             editor.get_by_label('Model of deep').select_option('claude-haiku-5-5')
+            editor.get_by_role('button', name='Refresh catalog for deep').click()
+            expect(editor.get_by_label('Model of deep').locator('option[value=new-model]')).to_have_count(1)
+            expect(editor.get_by_label('Model of deep')).to_have_value('claude-haiku-5-5')
             page.screenshot(path=str(shots / f'orca-agents-{theme}-350.png'))
             page.keyboard.press('Escape')
             expect(page.get_by_role('dialog')).to_have_count(0)
