@@ -269,6 +269,48 @@ fn retry_reason_reaches_the_next_attempt_ticket() {
 }
 
 #[test]
+fn final_operation_blocked_by_a_blocked_task_runs_after_retry() {
+    let f = Fixture::new();
+    let script = f.root.join("native.py");
+    fs::write(&script, BLOCKED_THEN_DONE).unwrap();
+    let a = json!({"id":"A","title":"Blocked once","unknown_capabilities":{"actor":"blocked-test","reason":"Synthetic emitter without provider calls"},"executor":{"kind":"claude","executable":"python","launcher_args":[script]}});
+    let check = json!({"id":"final","stage":{"kind":"final","tasks":["A"]},"required":true,"revision":"r1","inputs":["src/"],"initial":{"program":env!("CARGO_BIN_EXE_jtasks"),"args":["fixture","--outcome","silent","--exit-code","0"],"cwd":".","deadline_ms":5000},"repair_task":"A"});
+    let path = f.root.join("operations.json");
+    fs::write(&path,serde_json::to_vec(&json!({"schema_version":1,"completion":"judgment","operation_placement":"final","tasks":[a],"operations":[check]})).unwrap()).unwrap();
+    let import = f.call(&["import", path.to_str().unwrap(), "--run", "demo"]);
+    assert!(
+        import.status.success(),
+        "{}",
+        String::from_utf8_lossy(&import.stderr)
+    );
+    f.call(&["run", "--run", "demo"]);
+    let status = f.snapshot();
+    assert_eq!(status["tasks"][0]["state"], "blocked");
+    assert_eq!(status["operations"][0]["state"], "blocked");
+    let retry = f.call(&[
+        "retry",
+        "A",
+        "--run",
+        "demo",
+        "--reason",
+        "unblocked externally",
+        "--request-id",
+        "blocked-final",
+    ]);
+    assert!(
+        retry.status.success(),
+        "{}",
+        String::from_utf8_lossy(&retry.stderr)
+    );
+    let run = f.call(&["run", "--run", "demo"]);
+    let status = f.snapshot();
+    assert_eq!(status["tasks"][0]["state"], "completed");
+    assert_eq!(status["operations"][0]["state"], "passed", "{status}");
+    assert_eq!(status["operations"][0]["exit_code"], 0);
+    assert!(run.status.success(), "{status}");
+}
+
+#[test]
 fn manual_exhausted_grant_is_one_durable_idempotent_attempt() {
     let f = Fixture::new();
     let mut a = task("A", &[], "failed", "still unfinished");

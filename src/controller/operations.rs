@@ -139,7 +139,16 @@ pub fn tick(
     // Bind exactly one stable initial request to each logical operation. A restart
     // reuses the persisted handle; unknown custody remains blocked for intervention.
     let mut progressed = reconcile(store, run)?;
-    let operations = states(store, run, "operations")?;
+    let mut operations = states(store, run, "operations")?;
+    // Blocked only by producer states (no command ever started): such an
+    // operation becomes pending again once no need is impossible any more.
+    let producer_blocked: std::collections::HashSet<String> = store
+        .conn
+        .prepare(
+            "SELECT id FROM operations WHERE run_id=?1 AND state='blocked' AND command_id IS NULL",
+        )?
+        .query_map([run], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
     let mut tasks = states(store, run, "tasks")?;
     for (id, state) in &mut tasks {
         if state == "verification_pending"
@@ -152,42 +161,58 @@ pub fn tick(
         }
     }
     for operation in &plan.operations {
-        if operations
-            .get(&operation.id)
-            .is_none_or(|state| state != "pending")
+        let blocked = producer_blocked.contains(&operation.id)
+            && operations
+                .get(&operation.id)
+                .is_some_and(|s| s == "blocked");
+        if !blocked
+            && operations
+                .get(&operation.id)
+                .is_none_or(|state| state != "pending")
         {
             continue;
         }
-        let mut needs: Vec<(&str, bool)> = Vec::new();
+        let mut needs: Vec<(String, bool)> = Vec::new();
         match &operation.stage {
             Stage::Prerequisite { .. } => {}
-            Stage::Task { task } => needs.push((tasks[task].as_str(), true)),
+            Stage::Task { task } => needs.push((tasks[task].clone(), true)),
             Stage::Group { tasks: producers } | Stage::Final { tasks: producers } => {
                 for id in producers {
-                    needs.push((tasks[id].as_str(), false));
+                    needs.push((tasks[id].clone(), false));
                 }
             }
         }
         for dependency in &operation.depends_on {
             match dependency {
-                Dependency::Operation { id } => needs.push((operations[id].as_str(), false)),
-                Dependency::TaskCandidate { id } => needs.push((tasks[id].as_str(), true)),
-                Dependency::TaskCompleted { id } => needs.push((tasks[id].as_str(), false)),
+                Dependency::Operation { id } => needs.push((operations[id].clone(), false)),
+                Dependency::TaskCandidate { id } => needs.push((tasks[id].clone(), true)),
+                Dependency::TaskCompleted { id } => needs.push((tasks[id].clone(), false)),
             }
         }
         if needs.iter().any(|(state, _)| impossible(state)) {
+            if !blocked {
+                store.conn.execute(
+                    "UPDATE operations SET state='blocked' WHERE run_id=?1 AND id=?2",
+                    [run, &operation.id],
+                )?;
+                operations.insert(operation.id.clone(), "blocked".into());
+                progressed = true;
+            }
+            continue;
+        }
+        if blocked {
             store.conn.execute(
-                "UPDATE operations SET state='blocked' WHERE run_id=?1 AND id=?2",
+                "UPDATE operations SET state='pending' WHERE run_id=?1 AND id=?2 AND state='blocked' AND command_id IS NULL",
                 [run, &operation.id],
             )?;
+            operations.insert(operation.id.clone(), "pending".into());
             progressed = true;
-            continue;
         }
         if !needs.iter().all(|(state, is_candidate)| {
             if *is_candidate {
                 candidate(state)
             } else {
-                matches!(*state, "completed" | "passed")
+                matches!(state.as_str(), "completed" | "passed")
             }
         }) {
             continue;
