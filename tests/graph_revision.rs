@@ -350,6 +350,67 @@ fn live_controller_serializes_pending_changes_without_rewriting_active_attempt_o
 }
 
 #[test]
+fn live_controller_applies_a_proposal_larger_than_one_control_message() {
+    let f = Fixture::new();
+    let mut a = mapped("A", "completed");
+    a["executor"]["delay_ms"] = json!(1500);
+    let mut b = mapped("B", "completed");
+    b["depends_on"] = json!(["A"]);
+    let p = plan(json!([a, b]));
+    import(&f, &p);
+    let child = f
+        .command()
+        .args(["run", "--run", "demo"])
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut running = Running { fixture: &f, child };
+    f.await_status(|s| s["tasks"][0]["state"] == "running");
+    let padding = "Large revision detail. ".repeat(1200);
+    let mut changed = p;
+    let ids: Vec<String> = (1..=3).map(|i| format!("B{i}")).collect();
+    let mut tasks = vec![changed["tasks"][0].clone()];
+    let mut ancestry = serde_json::Map::new();
+    for id in &ids {
+        let mut t = mapped(id, "completed");
+        t["depends_on"] = json!(["A"]);
+        t["context"]["brief"] = json!(padding);
+        tasks.push(t);
+        ancestry.insert(id.clone(), json!("B"));
+    }
+    changed["tasks"] = json!(tasks);
+    let request = proposal("large", 0, changed, Value::Object(ancestry));
+    assert!(request.to_string().len() > 65536);
+    let receipt = accepted(&f, &request);
+    assert_eq!(receipt["current_total"], 4);
+    assert!(
+        fs::read_dir(f.data.join("proposals"))
+            .unwrap()
+            .next()
+            .is_none(),
+        "referenced proposal file left behind"
+    );
+    let status = f.await_status(|s| {
+        s["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|t| ids.iter().any(|id| t["id"] == id.as_str()))
+            .filter(|t| t["state"] == "completed")
+            .count()
+            == ids.len()
+    });
+    let b = status["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == "B")
+        .unwrap();
+    assert_eq!(b["state"], "superseded");
+    let _ = running.child.wait().unwrap();
+}
+
+#[test]
 fn split_keeps_each_original_task_check_at_task_completion() {
     let f = Fixture::new();
     let mut p = plan(json!([mapped("A", "completed")]));

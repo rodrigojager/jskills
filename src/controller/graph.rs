@@ -7,10 +7,70 @@ use crate::{
     },
     storage::{Store, Workspace},
 };
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
-use std::collections::{HashMap, HashSet};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    io::Read,
+    path::{Path, PathBuf},
+};
+
+/// Data-folder directory holding proposals too large for one control message.
+pub const PROPOSALS: &str = "proposals";
+/// Upper bound on a proposal passed by reference.
+const MAX_REFERENCED: u64 = 64 * 1024 * 1024;
+
+/// Write a proposal for a live controller to read by reference; returns the
+/// file and the SHA-256 of its bytes. The caller removes the file afterwards.
+pub fn write_referenced(workspace: &Workspace, proposal: &Proposal) -> Result<(PathBuf, String)> {
+    let bytes = serde_json::to_vec(proposal)?;
+    ensure!(
+        bytes.len() as u64 <= MAX_REFERENCED,
+        "graph proposal exceeds {MAX_REFERENCED} bytes"
+    );
+    let dir = workspace.data.join(PROPOSALS);
+    fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{}.json", uuid::Uuid::new_v4()));
+    fs::write(&path, &bytes)?;
+    Ok((path, format!("{:x}", Sha256::digest(&bytes))))
+}
+
+/// Read a proposal passed by reference: the file must sit directly in this
+/// data folder's proposal directory and its bytes must match the hash.
+pub fn referenced(workspace: &Workspace, path: &Path, sha256: &str) -> Result<Proposal> {
+    ensure!(
+        sha256.len() == 64
+            && sha256
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "invalid graph proposal hash"
+    );
+    let dir = fs::canonicalize(workspace.data.join(PROPOSALS))
+        .context("graph proposal folder missing")?;
+    let file = fs::canonicalize(path).context("graph proposal file missing")?;
+    ensure!(
+        file.parent() == Some(dir.as_path())
+            && file.extension().is_some_and(|e| e == "json")
+            && file.is_file(),
+        "graph proposal file outside the data folder's proposal directory"
+    );
+    let mut bytes = Vec::new();
+    fs::File::open(&file)?
+        .take(MAX_REFERENCED + 1)
+        .read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() as u64 <= MAX_REFERENCED,
+        "graph proposal exceeds {MAX_REFERENCED} bytes"
+    );
+    ensure!(
+        format!("{:x}", Sha256::digest(&bytes)) == sha256,
+        "graph proposal file does not match its hash"
+    );
+    Ok(serde_json::from_slice(&bytes)?)
+}
 
 pub const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS graph_baselines(run_id TEXT PRIMARY KEY REFERENCES runs(id), original_plan TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0);

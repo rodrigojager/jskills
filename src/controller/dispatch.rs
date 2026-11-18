@@ -196,6 +196,21 @@ pub fn run_with_panel(
                     scheduling_requested = true;
                     Ok(false)
                 }
+                Request::GraphFile {
+                    token,
+                    run: requested,
+                    path,
+                    sha256,
+                } => {
+                    ensure!(
+                        !stopped && token == endpoint.token && requested == run,
+                        "invalid graph control scope"
+                    );
+                    let proposal = super::graph::referenced(workspace, &path, &sha256)?;
+                    graph = Some(super::graph::propose(workspace, &store, run, &proposal)?);
+                    scheduling_requested = true;
+                    Ok(false)
+                }
                 Request::Log {
                     token,
                     attempt,

@@ -7,7 +7,8 @@ use std::{
     time::Duration,
 };
 
-const MAX_REQUEST: u64 = 65536;
+/// Largest accepted control message, newline included.
+pub const MAX_REQUEST: u64 = 65536;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
@@ -33,6 +34,14 @@ pub enum Request {
         token: String,
         run: String,
         proposal: Box<crate::domain::graph::Proposal>,
+    },
+    /// A graph proposal too large for one message, passed by reference: a file
+    /// in the data folder's proposal directory and the SHA-256 of its bytes.
+    GraphFile {
+        token: String,
+        run: String,
+        path: std::path::PathBuf,
+        sha256: String,
     },
     Log {
         token: String,
@@ -93,6 +102,11 @@ pub fn send(endpoint: SocketAddr, request: &Request) -> Result<Response> {
         response.error.as_deref().unwrap_or("unknown error")
     );
     Ok(response)
+}
+
+/// Whether a request fits in one control message.
+pub fn fits(request: &Request) -> Result<bool> {
+    Ok(serde_json::to_vec(request)?.len() as u64 + 1 <= MAX_REQUEST)
 }
 
 pub fn read_message<T: serde::de::DeserializeOwned>(stream: &mut TcpStream) -> Result<T> {

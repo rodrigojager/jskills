@@ -41,18 +41,49 @@ pub fn execute(workspace: &Workspace, args: Graph) -> Result<i32> {
                     .context("checkout writer busy; task controller unavailable")?,
             )?;
             ensure!(endpoint.run == run, "controller serves another run");
-            transport::send(
-                endpoint.endpoint,
-                &Request::Graph {
-                    token: endpoint.token,
-                    run,
-                    proposal: Box::new(proposal),
-                },
-            )?
-            .graph
-            .context("controller returned no graph receipt")?
+            send(workspace, endpoint, run, proposal)?
+                .graph
+                .context("controller returned no graph receipt")?
         }
     };
     println!("{receipt}");
     Ok(0)
+}
+
+/// Send inline when the request fits one control message; otherwise pass the
+/// proposal by reference through the data folder and remove the file after.
+fn send(
+    workspace: &Workspace,
+    endpoint: ControlEndpoint,
+    run: String,
+    proposal: Proposal,
+) -> Result<transport::Response> {
+    let inline = Request::Graph {
+        token: endpoint.token,
+        run,
+        proposal: Box::new(proposal),
+    };
+    if transport::fits(&inline)? {
+        return transport::send(endpoint.endpoint, &inline);
+    }
+    let Request::Graph {
+        token,
+        run,
+        proposal,
+    } = inline
+    else {
+        unreachable!()
+    };
+    let (path, sha256) = crate::controller::graph::write_referenced(workspace, &proposal)?;
+    let response = transport::send(
+        endpoint.endpoint,
+        &Request::GraphFile {
+            token,
+            run,
+            path: path.clone(),
+            sha256,
+        },
+    );
+    let _ = fs::remove_file(&path);
+    response
 }
