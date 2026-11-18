@@ -31,7 +31,7 @@
    "context": {
     "brief": "Slice {id} of the plan ({slice.#section}).",
     "requirements": ["Delivers: {slice.Delivers}", "Proof: {slice.Proof}", "Files it owns: {files.paths}"],
-    "references": ["{plan_dir}/PLAN-delivery.md (row {id})"]
+    "references": [{"read": "{id}-files", "title": "Files slice {id} owns", "from": [{"rows": "files"}]}]
    }
   }
  },
@@ -40,7 +40,8 @@
   {"id": "S2", "group": "slice", "use_cases": [2], "depends_on": ["S1"],
    "context": {"dependency_artifacts": ["src/greet.rs from S1"]}},
   {"id": "V1", "title": "V1: verify the service end to end", "executor": "demo", "requirements": ["AC-1"], "depends_on": ["@slice"],
-   "context": {"brief": "Verification slice.", "requirements": ["The acceptance case passes from outside the service."]}}
+   "context": {"brief": "Verification slice.", "requirements": ["The acceptance case passes from outside the service."],
+    "references": [{"read": "acceptance", "title": "Acceptance cases", "from": [{"file": "PLAN-delivery.md", "section": "Acceptance cases"}]}]}}
  ],
  "operations": [
   {"id": "toolchain", "stage": {"kind": "prerequisite", "consumers": ["@slice"]},

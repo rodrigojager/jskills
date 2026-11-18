@@ -197,10 +197,70 @@ fn shipped_spec_composes_plan_text_and_passes_public_validation_without_state() 
         intent["operations"][1]["depends_on"],
         serde_json::json!([{"kind": "operation", "id": "toolchain"}])
     );
+    // Long or quote-heavy plan text goes to a read file holding only what the task reads, and the task points to
+    // that file, never to a section of a larger one.
+    let reads = c.output.parent().unwrap().join("example.reads");
+    let acceptance = fs::read_to_string(reads.join("acceptance.md")).unwrap();
+    assert!(acceptance.starts_with("# Acceptance cases\n\n## 2. Acceptance cases\n"), "{acceptance}");
+    assert!(acceptance.contains("- **AC-1** (end to end): a caller is\n  greeted by name."), "{acceptance}");
+    assert!(!acceptance.contains("Files"), "a read file holds only its own section: {acceptance}");
+    let s2_files = fs::read_to_string(reads.join("S2-files.md")).unwrap();
+    assert_eq!(
+        s2_files,
+        "# Files slice S2 owns\n\n| File | Slice |\n|---|---|\n| src/health.rs | S2 |\n| src/routes.rs | S2 |\n"
+    );
+    let reads_dir = reads.canonicalize().unwrap();
+    let reads_dir = reads_dir.to_str().unwrap().trim_start_matches(r"\\?\").replace('\\', "/");
+    assert_eq!(
+        intent["tasks"][2]["context"]["references"],
+        serde_json::json!([format!(
+            "Read {reads_dir}/acceptance.md (Acceptance cases): it holds only what this task needs from the plan."
+        )])
+    );
     assert!(
         !c.fixture.data.exists() && !c.fixture.root.join(".git/jtasks-v2").exists(),
         "composing, validating and previewing must not create runtime state"
     );
+}
+
+#[test]
+fn read_files_follow_the_spec_and_only_their_own_files_are_removed() {
+    let c = Composition::new();
+    assert!(c.compose(&[]).status.success());
+    let reads = c.output.parent().unwrap().join("example.reads");
+    let mine = fs::read_to_string(reads.join("S1-files.md")).unwrap();
+    assert!(mine.contains("| src/greet.rs | S1 |"));
+    let unrelated = reads.join("notes-of-the-user.md");
+    fs::write(&unrelated, "kept").unwrap();
+
+    // A read file the spec no longer asks for is removed; one the helper never wrote is not.
+    c.edit_spec(|s| {
+        s["groups"]["slice"]["context"]
+            .as_object_mut()
+            .unwrap()
+            .remove("references");
+    });
+    assert!(!c.compose(&["--check"]).status.success());
+    assert!(c.compose(&[]).status.success());
+    assert!(!reads.join("S1-files.md").exists());
+    assert!(reads.join("acceptance.md").exists());
+    assert_eq!(fs::read_to_string(&unrelated).unwrap(), "kept");
+
+    // Check mode also compares the read files, not only the intent.
+    fs::write(reads.join("acceptance.md"), "edited by hand").unwrap();
+    let edited = c.compose(&["--check"]);
+    assert!(!edited.status.success());
+    assert!(text(&edited).contains("read files are not what the spec composes (acceptance.md)"), "{}", text(&edited));
+    assert!(c.compose(&[]).status.success());
+
+    // Two different texts under one name are refused instead of one silently winning.
+    c.edit_spec(|s| {
+        s["groups"]["slice"]["context"]["references"] =
+            serde_json::json!([{"read": "files", "from": [{"rows": "files"}]}]);
+    });
+    let clash = c.compose(&[]);
+    assert!(!clash.status.success());
+    assert!(text(&clash).contains("would hold two different texts"), "{}", text(&clash));
 }
 
 #[test]

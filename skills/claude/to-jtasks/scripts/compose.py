@@ -72,6 +72,25 @@ class Document:
         start, end = self.span(wanted)
         return one_line(" ".join(self.lines[start:end]))
 
+    def raw_section(self, wanted):
+        """The section as written, heading included, for a read file."""
+        start, end = self.span(wanted)
+        return "\n".join(self.lines[start - 1:end]).strip("\n")
+
+    def raw_item(self, wanted, key):
+        """One list item as written (its continuation lines included), for a read file."""
+        start, end = self.span(wanted)
+        found = []
+        for index in range(start, end):
+            match = re.match(r"(?:(\d+)\.|[-*]) +(?:\*\*(.+?)\*\*)?", self.lines[index])
+            if match and str(key) in (match.group(1), match.group(2)):
+                stop = index + 1
+                while stop < end and self.lines[stop].strip() and not re.match(r"(?:\d+\.|[-*]) +", self.lines[stop]):
+                    stop += 1
+                found.append("\n".join(self.lines[index:stop]))
+        require(len(found) == 1, f"{self.path.name}: {len(found)} items '{key}' in '{wanted}'")
+        return found[0]
+
     def items(self, wanted):
         """List items of a section: (key, text). The key is the number, or the leading **bold** words of a bullet."""
         start, end = self.span(wanted)
@@ -115,7 +134,10 @@ class Document:
                 row = dict(zip(header, cells))
                 row.update({f"#{n}": cell for n, cell in enumerate(cells, 1)})
                 row["#section"] = next((text for at, _, text in reversed(self.headings) if at < index), "")
+                row["#line"], row["#header"] = index, header_line[0]
                 self._tables.append((index, row, cells))
+
+            header_line = [None]
 
             for index, line in enumerate(self.lines):
                 if not line.startswith("|"):
@@ -125,6 +147,7 @@ class Document:
                 following = self.lines[index + 1] if index + 1 < len(self.lines) else ""
                 if header is None and following.startswith("|") and separator(split(following)):
                     header = previous = cells
+                    header_line[0] = index
                 elif header is None and previous is not None and len(cells) == len(previous):
                     # A row cut off from its table by a blank line still belongs to it.
                     header = previous
@@ -185,9 +208,54 @@ def render(template, resolve, where):
     return re.sub(r"\{\{|\}\}|\{([^{}\n]+)\}", replace, template)
 
 
+class Reads:
+    """Read files written beside the intent. One name holds one content; tasks that read the same text share it."""
+
+    def __init__(self, folder):
+        self.folder, self.files = folder, {}
+
+    def add(self, name, content, where):
+        file = name if name.endswith(".md") else name + ".md"
+        require(self.files.get(file, content) == content,
+                f"{where}: read file '{file}' would hold two different texts; give each its own name (for example with {{id}})")
+        self.files[file] = content
+        return (self.folder / file).as_posix()
+
+    MANIFEST = ".compose-manifest.json"
+
+    def check(self):
+        problems = []
+        for file, content in self.files.items():
+            path = self.folder / file
+            if not path.is_file() or path.read_text(encoding="utf-8") != content:
+                problems.append(file)
+        previous = self.previous()
+        problems += [f"{file} (no longer composed)" for file in previous if file not in self.files and (self.folder / file).exists()]
+        return problems
+
+    def previous(self):
+        manifest = self.folder / self.MANIFEST
+        return json.loads(manifest.read_text(encoding="utf-8")) if manifest.is_file() else []
+
+    def write(self):
+        # Only files this helper wrote before are removed; anything else in the folder is left alone.
+        for file in self.previous():
+            if file not in self.files and (self.folder / file).is_file():
+                (self.folder / file).unlink()
+        if not self.files:
+            if (self.folder / self.MANIFEST).is_file():
+                (self.folder / self.MANIFEST).unlink()
+            return
+        self.folder.mkdir(parents=True, exist_ok=True)
+        for file, content in self.files.items():
+            (self.folder / file).write_text(content, encoding="utf-8", newline="\n")
+        (self.folder / self.MANIFEST).write_text(json.dumps(sorted(self.files), indent=1) + "\n", encoding="utf-8", newline="\n")
+
+
 class Scope:
-    def __init__(self, plan, variables, lookups, task_id, where):
+    def __init__(self, plan, variables, lookups, task_id, where, reads=None):
         self.plan, self.variables, self.lookups, self.task_id, self.where = plan, variables, lookups, task_id, where
+        self.reads = reads
         self.cache = {}
 
     def base(self, name):
@@ -256,7 +324,43 @@ class Scope:
             raise Skip()
         return spec.get("join", ", ").join(parts)
 
+    def read_file(self, value, where):
+        """{"read": name, "title": ..., "from": [sources]}: a file holding only what the task reads, and the line
+        that points the task to it."""
+        require(set(value) <= {"read", "title", "from"} and value.get("from"),
+                f"{where}: a read file has 'read' (its name), optional 'title' and a nonempty 'from'")
+        name = render(value["read"], self.plain, where)
+        require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name), f"{where}: read file name '{name}' is not a plain file name")
+        title = render(value["title"], self.resolve, where) if "title" in value else name
+        parts = []
+        for source in value["from"]:
+            require(isinstance(source, dict) and len(set(source) & {"section", "rows", "text"}) == 1,
+                    f"{where}: a read source is a section (optional file, item), 'rows' of a lookup or 'text'")
+            if "text" in source:
+                parts.append(render(source["text"], self.resolve, where))
+            elif "rows" in source:
+                require(source["rows"] in self.lookups, f"{where}: unknown lookup '{source['rows']}'")
+                rows = self.rows(source["rows"])
+                if not rows:
+                    continue
+                document = self.plan.document(self.lookups[source["rows"]]["file"])
+                tables = {}
+                for row in rows:
+                    tables.setdefault(row["#header"], []).append(document.lines[row["#line"]])
+                for header, lines in tables.items():
+                    parts.append("\n".join([document.lines[header], document.lines[header + 1], *lines]))
+            else:
+                document = self.plan.document(source.get("file"))
+                parts.append(document.raw_item(source["section"], source["item"]) if "item" in source
+                             else document.raw_section(source["section"]))
+        if not parts:
+            raise Skip()
+        return self.reads.add(name, f"# {title}\n\n" + "\n\n".join(parts) + "\n", where), title
+
     def text(self, value, where):
+        if isinstance(value, dict) and "read" in value:
+            path, title = self.read_file(value, where)
+            return f"Read {path} ({title}): it holds only what this task needs from the plan."
         if isinstance(value, dict):
             return self.plan.source(value, where)
         require(isinstance(value, str), f"{where}: expected a string or a text pointer")
@@ -302,7 +406,7 @@ def merged(group, task):
     return result
 
 
-def compose(spec, spec_path):
+def compose(spec, spec_path, output):
     require(isinstance(spec, dict), "the spec is a JSON object")
     require(spec.get("compose_version") == 1, "the spec needs compose_version: 1")
     unknown = set(spec) - SPEC_KEYS
@@ -313,7 +417,9 @@ def compose(spec, spec_path):
     main = plan.document()
     variables = spec.get("vars", {})
     top_lookups = spec.get("lookups", {})
-    top = Scope(plan, variables, top_lookups, None, "context")
+    output = output.resolve()
+    reads = Reads(output.parent / (output.stem + ".reads"))
+    top = Scope(plan, variables, top_lookups, None, "context", reads)
 
     # Requirements: the plan's use cases by number, then literal or pointed ones.
     requirements, prefix, width = [], None, 2
@@ -378,7 +484,7 @@ def compose(spec, spec_path):
         for tag in item.pop("tags", []):
             tags.setdefault(tag, []).append(task_id)
         scope = Scope(plan, {**variables, **item.pop("vars", {})}, {**top_lookups, **item.pop("lookups", {})},
-                      task_id, where)
+                      task_id, where, reads)
         require("title" in item and "executor" in item, f"{where}: needs a title and an executor")
         task = {"id": task_id, "title": scope.text(item.pop("title"), where)}
         covers = list(item.pop("requirements", []))
@@ -479,7 +585,7 @@ def compose(spec, spec_path):
     intent["tasks"] = tasks
     if operations:
         intent["operations"] = operations
-    return intent
+    return intent, reads
 
 
 def summary(intent):
@@ -536,17 +642,23 @@ def main():
     try:
         require(arguments.spec.is_file(), f"spec not found: {arguments.spec}")
         spec = json.loads(arguments.spec.read_text(encoding="utf-8"))
-        intent = compose(spec, arguments.spec.resolve())
         target = arguments.out or (arguments.spec.parent / spec["output"] if "output" in spec else None)
         require(target is not None, "no output: give 'output' in the spec or --out")
+        intent, reads = compose(spec, arguments.spec.resolve(), target)
         text = json.dumps(intent, indent=1, ensure_ascii=False) + "\n"
         if arguments.check:
             require(target.is_file() and target.read_text(encoding="utf-8") == text,
                     f"{target} is not what the spec composes; compose again")
+            stale = reads.check()
+            require(not stale, f"read files are not what the spec composes ({', '.join(stale)}); compose again")
         else:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(text, encoding="utf-8", newline="\n")
+            reads.write()
         print(f"{'checked' if arguments.check else 'wrote'} {target.as_posix()} ({len(text.encode('utf-8'))} bytes)")
+        if reads.files:
+            size = sum(len(c.encode("utf-8")) for c in reads.files.values())
+            print(f"read files: {len(reads.files)} in {reads.folder.as_posix()} ({size} bytes)")
         for line in summary(intent):
             print(line)
         if arguments.jtasks:

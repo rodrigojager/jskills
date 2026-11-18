@@ -26,6 +26,15 @@ Write only a short spec and let `scripts/compose.py` produce the JSON intent: it
 python <skill>/scripts/compose.py <name>.spec.json --jtasks <independent-jtasks-executable> --root <container-or-checkout>
 ```
 
+### What a task reads
+
+A task starts with a fresh context and pays, in tokens and context window, for everything it opens. Never tell it to read a section, row or line range of a larger file: it may open the whole file to find the part. Give it exactly what it needs, in one of two ways:
+
+- **In the ticket**, when the text is short: a text pointer or a lookup copies it into the task's context.
+- **In a read file**, when the text is long, holds quotes or other characters that are awkward inside JSON, would make the intent larger than it should be, or is shared by many tasks: a `{"read": ...}` entry makes the helper write a file beside the intent that holds only that text, copied from the plan, and points the task to it. Tasks that read the same text share one file; a text specific to a task gets a name with `{id}`.
+
+Pointing to a whole file is fine when the task needs all of it (an ADR, a schema, a fixture). Read files are derived like the intent: never edit them, change the plan or the spec and compose again.
+
 The helper needs Python 3.10+ and nothing else; the Rust CLI does not need it. It never imports or runs. The spec format is in the last section of the reference, and [assets/compose.spec.json](assets/compose.spec.json) is a small complete example. Do not write a one-off generator script, and do not hand-write the JSON unless Python is unavailable.
 
 Validate through `jtasks validate <plan.json>`, then show `jtasks operations preview <plan.json>` and the task/dependency summary before execution. Include exact initial invocations, cwd, environment reference names, inputs/revision, required status, stages/consumers, repair responsibility, deadlines and capacities. Fix invalid JSON or unsupported capability choices; do not silently substitute a model or change the selected schedule. Import and run only when execution is already authorized; otherwise hand back the validated intent and preview.
