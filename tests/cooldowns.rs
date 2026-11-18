@@ -211,6 +211,63 @@ fn blocked_task_is_retried_with_history_and_completes() {
     assert_eq!(status["tasks"][0]["attempts"].as_array().unwrap().len(), 2);
 }
 
+fn ticket(f: &Fixture, attempt: &Value) -> String {
+    fs::read_to_string(
+        f.data
+            .join("attempts")
+            .join(attempt["id"].as_str().unwrap())
+            .join("ticket.md"),
+    )
+    .unwrap()
+}
+
+#[test]
+fn retry_reason_reaches_the_next_attempt_ticket() {
+    let f = Fixture::new();
+    let script = f.root.join("native.py");
+    fs::write(&script, BLOCKED_THEN_DONE).unwrap();
+    let a = json!({"id":"A","title":"Blocked once","unknown_capabilities":{"actor":"blocked-test","reason":"Synthetic emitter without provider calls"},"executor":{"kind":"claude","executable":"python","launcher_args":[script]}});
+    f.import(json!([a]));
+    f.call(&["run", "--run", "demo"]);
+    let reason = "Operator answer: yes, use the staging database zq-7731";
+    let retry = f.call(&[
+        "retry",
+        "A",
+        "--run",
+        "demo",
+        "--reason",
+        reason,
+        "--request-id",
+        "answer-a",
+    ]);
+    assert!(
+        retry.status.success(),
+        "{}",
+        String::from_utf8_lossy(&retry.stderr)
+    );
+    f.call(&["run", "--run", "demo"]);
+    let status = f.snapshot();
+    let attempts = status["tasks"][0]["attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 2);
+    let first = attempts.iter().find(|a| a["outcome"] == "blocked").unwrap();
+    let second = attempts
+        .iter()
+        .find(|a| a["outcome"] == "completed")
+        .unwrap();
+    let before = ticket(&f, first);
+    assert!(before.contains("## Notes from the operator since the last attempt\nThe operator"));
+    assert!(!before.contains(reason), "{before}");
+    let after = ticket(&f, second);
+    let section = after
+        .split("## Notes from the operator since the last attempt")
+        .nth(1)
+        .unwrap()
+        .split("## Effective autonomy")
+        .next()
+        .unwrap();
+    assert!(section.contains(&format!(": {reason}")), "{after}");
+}
+
 #[test]
 fn manual_exhausted_grant_is_one_durable_idempotent_attempt() {
     let f = Fixture::new();

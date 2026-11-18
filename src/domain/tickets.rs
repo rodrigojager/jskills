@@ -136,6 +136,118 @@ pub fn render(plan: &Plan, task: &Task, attempt: &str, facts: &RecoveryFacts) ->
 /// result, so waiting for background work must stay inside one turn.
 pub const LONG_COMMANDS: &str = "## Long commands\nRun long commands (builds, test suites, images) with `jtasks exec run --request-id <stable-id> -- <program> <args>` (or `--shell \"<script>\"`) in the foreground, calling the jtasks executable at `JTASKS_BIN` (PowerShell `& $env:JTASKS_BIN exec run ...`, POSIX `\"$JTASKS_BIN\" exec run ...`): the jtasks controller owns the command, it has no deadline unless you give one, it outlives your session, and the call waits up to `--wait-seconds` (default 300). While the receipt says `wait_expired: true`, repeat the same `exec run` call (the same request ID waits for the same command; nothing starts twice) or `jtasks exec wait <command_id> --wait-seconds <n>`, in the foreground; read the output in pages with `jtasks exec output <command_id> --stream stdout|stderr --offset <next_offset> --text`. Reuse the same request ID after a retry: it returns the same command instead of starting it again. Short commands may run in the foreground directly. Never run a command in the background and never end your turn to wait for background work (a monitor, a scheduled wake-up or a background task notification): the end of your turn demands your result, and jtasks refuses those tools. Submit your outcome only when the work is done.";
 
+/// Newest operator notes shown to a worker; older ones are counted, not shown.
+const NOTE_LIMIT: usize = 10;
+/// Bytes of one note shown to a worker; the journal keeps the full text.
+const NOTE_BYTES: usize = 2000;
+
+fn bounded(text: &str) -> String {
+    let text = text.trim();
+    if text.len() <= NOTE_BYTES {
+        return text.into();
+    }
+    let mut end = NOTE_BYTES;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{} [truncated; full text in the run journal]", &text[..end])
+}
+
+/// Operator notes (manual retry reasons and recorded answers) given to this
+/// task's lineage since its previous attempt started, so a retried worker
+/// receives the answer in both autonomous and restricted mode.
+fn operator_notes(conn: &Connection, run: &str, task: &str, attempt: &str) -> Result<String> {
+    let root = crate::controller::graph::root(conn, run, task)?;
+    let mut lineage = vec![task.to_string(), root.clone()];
+    let ancestry: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='graph_ancestry')",
+        [],
+        |r| r.get(0),
+    )?;
+    if ancestry {
+        let mut query =
+            conn.prepare("SELECT task_id FROM graph_ancestry WHERE run_id=?1 AND root_id=?2")?;
+        for id in query.query_map([run, root.as_str()], |r| r.get::<_, String>(0))? {
+            lineage.push(id?);
+        }
+    }
+    let mut launches = conn.prepare(
+        "SELECT sequence,task_id,attempt_id FROM journal WHERE run_id=?1 AND event='launch_intent' ORDER BY sequence",
+    )?;
+    let (mut since, mut until) = (0i64, i64::MAX);
+    for row in launches.query_map([run], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, Option<String>>(1)?,
+            r.get::<_, Option<String>>(2)?,
+        ))
+    })? {
+        let (sequence, task_id, attempt_id) = row?;
+        if attempt_id.as_deref() == Some(attempt) {
+            until = until.min(sequence);
+        } else if task_id.is_some_and(|id| lineage.contains(&id)) && sequence < until {
+            since = since.max(sequence);
+        }
+    }
+    let records = crate::controller::questions::read(conn, run)?;
+    let records = records.as_array().unwrap();
+    let mut events = conn.prepare(
+        "SELECT sequence,task_id,event,detail,recorded_at FROM journal WHERE run_id=?1 AND event IN ('manual_retry','restricted_answer') AND sequence>?2 AND sequence<?3 ORDER BY sequence",
+    )?;
+    let mut notes = Vec::new();
+    for row in events.query_map(rusqlite::params![run, since, until], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, Option<String>>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+            r.get::<_, String>(4)?,
+        ))
+    })? {
+        let (sequence, task_id, event, detail, recorded_at) = row?;
+        if !task_id.is_some_and(|id| lineage.contains(&id)) {
+            continue;
+        }
+        let detail: serde_json::Value = serde_json::from_str(&detail).unwrap_or_default();
+        let note = if event == "manual_retry" {
+            format!(
+                "- Retry reason (sequence {sequence}, {recorded_at}): {}",
+                bounded(detail["reason"].as_str().unwrap_or(""))
+            )
+        } else {
+            let question = records
+                .iter()
+                .find(|q| {
+                    q["event"] == "restricted_question"
+                        && q["detail"]["request_id"] == detail["question_id"]
+                })
+                .and_then(|q| q["detail"]["question"].as_str())
+                .unwrap_or("unknown question");
+            format!(
+                "- Answer by {} (sequence {sequence}, {recorded_at}) to \"{}\": {}",
+                bounded(detail["actor"].as_str().unwrap_or("unknown")),
+                bounded(question),
+                bounded(detail["text"].as_str().unwrap_or(""))
+            )
+        };
+        notes.push(note);
+    }
+    let mut out = String::from(
+        "## Notes from the operator since the last attempt\nThe operator gave these notes (`jtasks retry --reason`, `jtasks answer`) after the previous attempt started. They answer or resolve what that attempt reported: act on them and do not report the same blocker or question again unless a note leaves it unresolved.\n",
+    );
+    if notes.is_empty() {
+        out.push_str("None recorded.\n");
+    }
+    let omitted = notes.len().saturating_sub(NOTE_LIMIT);
+    if omitted > 0 {
+        let _ = writeln!(out, "{omitted} older notes omitted by limit.");
+    }
+    for note in &notes[omitted..] {
+        let _ = writeln!(out, "{note}");
+    }
+    Ok(out)
+}
+
 /// Called after durable launch intent and before spawning any worker.
 pub fn write_attempt_ticket(workspace: &Workspace, task: &Task, attempt: &str) -> Result<PathBuf> {
     crate::domain::validation::identifier(attempt)?;
@@ -187,8 +299,9 @@ pub fn write_attempt_ticket(workspace: &Workspace, task: &Task, attempt: &str) -
     fs::write(
         &path,
         format!(
-            "{}\n## Effective autonomy: {mode}\n{instructions}\nNative permissions are not an OS sandbox. Scope, required outcomes and budgets remain enforced. Do not invent credentials or facts. Native helper policy inheritance is harness-managed and not guaranteed by jtasks. Keep private reasoning and secrets out of records.\n\n{LONG_COMMANDS}\n\nSame-task explicit decisions/questions/answers (journal sequence; attributable claims):\n```json\n{}\n```\n",
+            "{}\n{}\n## Effective autonomy: {mode}\n{instructions}\nNative permissions are not an OS sandbox. Scope, required outcomes and budgets remain enforced. Do not invent credentials or facts. Native helper policy inheritance is harness-managed and not guaranteed by jtasks. Keep private reasoning and secrets out of records.\n\n{LONG_COMMANDS}\n\nSame-task explicit decisions/questions/answers (journal sequence; attributable claims):\n```json\n{}\n```\n",
             render(&plan, task, attempt, &facts),
+            operator_notes(&conn, &run, &task.id, attempt)?,
             serde_json::to_string_pretty(&same_task)?
         ),
     )?;
