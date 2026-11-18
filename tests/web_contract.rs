@@ -105,6 +105,12 @@ fn real_http_uses_exact_shared_projections_without_control_or_runtime_writes() {
     f.import(serde_json::json!([task("A", &[], "silent", "")]));
     let w = Workspace::resolve(&f.root, Some(&f.data)).unwrap();
     fs::write(w.data.join("control.json"), "SENTINEL_SECRET_NEVER_READ").unwrap();
+    fs::create_dir_all(jtasks::transport::run_folder(&w.data, "demo")).unwrap();
+    fs::write(
+        jtasks::transport::control_file(&w.data, "demo"),
+        "SENTINEL_SECRET_NEVER_READ",
+    )
+    .unwrap();
     let before = files(&w.data);
     let server = Serving::new(&w);
     for (view, query) in [
@@ -150,7 +156,7 @@ fn only_scoped_read_routes_allow_get_and_incomplete_clients_do_not_block_poll() 
     ] {
         assert_eq!(server.get(route).0, 404);
     }
-    assert_eq!(server.send("POST", "/api/read", &server.host, "").0, 405);
+    assert_eq!(server.send("POST", "/api/read", &server.host, "").0, 403);
     assert_eq!(server.send("GET", "/api/read", "evil.example", "").0, 400);
     assert_eq!(
         server

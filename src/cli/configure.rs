@@ -58,7 +58,7 @@ fn fixed_view(configuration: &ProfileConfig) -> Value {
 }
 
 /// Aliases named by the run's tasks (role tasks) and observers, in plan order.
-fn list(workspace: &Workspace, run: &str) -> Result<Value> {
+pub fn list(workspace: &Workspace, run: &str) -> Result<Value> {
     let conn = projections::open(workspace)?;
     let mut query =
         conn.prepare("SELECT id,spec,state FROM tasks WHERE run_id=?1 ORDER BY ordinal")?;
@@ -128,7 +128,7 @@ fn catalogue(workspace: &Workspace, executor: &str) -> Result<Option<catalog::Sn
     Ok(refreshed.ok().or(cached))
 }
 
-fn choices(workspace: &Workspace, executor: &str) -> Result<Value> {
+pub fn choices(workspace: &Workspace, executor: &str) -> Result<Value> {
     catalog::name(executor)?;
     let mut models: Vec<String> = vec![];
     let mut in_use: Vec<String> = vec![];
@@ -230,6 +230,27 @@ fn apply(workspace: &Workspace, run: &str, change: &Change, actor: &str) -> Resu
         params![run, detail.to_string()],
     )?;
     Ok(json!({"run":run,"alias":change.alias,"changed":detail,"saved":path}))
+}
+
+/// Same as `jtasks configure --set`; answers the alias's new `--list` entry.
+pub fn set_alias(
+    workspace: &Workspace,
+    run: &str,
+    alias: &str,
+    fields: [Option<String>; 4],
+    actor: &str,
+) -> Result<Value> {
+    let [executor, provider, model, effort] = fields;
+    let change = prepare(workspace, alias, executor, provider, model, effort, actor)?;
+    let applied = apply(workspace, run, &change, actor)?;
+    let entry = list(workspace, run).ok().and_then(|l| {
+        l["aliases"]
+            .as_array()?
+            .iter()
+            .find(|a| a["alias"] == alias)
+            .cloned()
+    });
+    Ok(entry.unwrap_or(applied))
 }
 
 pub fn execute(workspace: &Workspace, args: Configure) -> Result<i32> {
