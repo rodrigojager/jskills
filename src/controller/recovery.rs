@@ -113,7 +113,7 @@ pub fn next_kind(conn: &Connection, run: &str, task: &str) -> Result<String> {
     Ok(
         if has_splits(conn, run, &root)?
             && ledger(conn, run, &root)?.initial > 0
-            && (kind == "initial" || (kind == "infrastructure" && !own_attempt))
+            && (kind == "initial" || ((kind == "infrastructure" || kind == STOP) && !own_attempt))
         {
             "work".into()
         } else {
@@ -146,6 +146,7 @@ pub fn eligible(conn: &Connection, run: &str, task: &str) -> Result<bool> {
         "initial" => ledger.initial == 0,
         "work" => ledger.work < ledger.work_limit,
         "infrastructure" => ledger.infrastructure < ledger.infrastructure_limit,
+        STOP => true,
         _ => false,
     })
 }
@@ -268,11 +269,23 @@ pub fn after_retire(
     let mut evidence = json!({"reason":"unfinished work or unknown failure","attempt":attempt});
     let mut blocked = false;
     let mut wait_hint = None;
-    for (file, identity) in [
-        ("codex-observation.json", "thread_id"),
-        ("claude-observation.json", "session_id"),
-        ("opencode-observation.json", "session_id"),
-    ] {
+    // A worker the controller retired itself on an explicit stop starts again
+    // fresh, outside the retry budget; only a real custody gap stays manual.
+    let stopped = state == "interrupted" && stop_retired(&store.conn, attempt)?;
+    if stopped {
+        evidence =
+            json!({"reason":"controller retired its worker on an explicit stop","attempt":attempt});
+    }
+    let observations: &[(&str, &str)] = if stopped {
+        &[]
+    } else {
+        &[
+            ("codex-observation.json", "thread_id"),
+            ("claude-observation.json", "session_id"),
+            ("opencode-observation.json", "session_id"),
+        ]
+    };
+    for &(file, identity) in observations {
         let path = workspace.data.join("attempts").join(attempt).join(file);
         let Ok(file) = fs::File::open(path) else {
             continue;
@@ -313,7 +326,14 @@ pub fn after_retire(
     // A repeated reconciliation must not create a different decision.
     let recorded: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM journal WHERE run_id=?1 AND task_id=?2 AND attempt_id=?3 AND event='recovery_decided')",[run,task,attempt],|r|r.get(0))?;
     if !recorded {
-        tx.execute("UPDATE recovery_lineages SET next_kind=?3,resume_attempt=?4 WHERE run_id=?1 AND task_id=?2",params![run,root,if blocked {"blocked"} else {kind.as_str()},resume])?;
+        let next = if stopped {
+            STOP
+        } else if blocked {
+            "blocked"
+        } else {
+            kind.as_str()
+        };
+        tx.execute("UPDATE recovery_lineages SET next_kind=?3,resume_attempt=?4 WHERE run_id=?1 AND task_id=?2",params![run,root,next,resume])?;
         if let Some(hint) = wait_hint {
             blocked |= super::cooldowns::schedule(
                 &tx,
@@ -339,11 +359,24 @@ pub fn after_retire(
                 },
             ],
         )?;
-        tx.execute("INSERT INTO journal(run_id,task_id,attempt_id,event,detail) VALUES(?1,?2,?3,'recovery_decided',?4)",params![run,task,attempt,json!({"kind":kind,"blocked":blocked,"resume_attempt":resume,"evidence":evidence}).to_string()])?;
+        tx.execute("INSERT INTO journal(run_id,task_id,attempt_id,event,detail) VALUES(?1,?2,?3,'recovery_decided',?4)",params![run,task,attempt,json!({"kind":if stopped {json!(STOP)} else {json!(kind)},"blocked":blocked,"resume_attempt":resume,"evidence":evidence}).to_string()])?;
     }
     tx.commit()?;
     super::admission::release(workspace, run, task, attempt)?;
     Ok(())
+}
+
+/// Recovery kind after an explicit stop. Its invocation counts against no
+/// allowance: the stop was the operator's choice, not a failed attempt.
+pub const STOP: &str = "stop";
+
+/// True when the controller itself retired this attempt on an explicit stop.
+pub fn stop_retired(conn: &Connection, attempt: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM journal WHERE attempt_id=?1 AND event='stop_retired')",
+        [attempt],
+        |r| r.get(0),
+    )?)
 }
 
 /// Recover the small commit gap between durable retirement and the recovery

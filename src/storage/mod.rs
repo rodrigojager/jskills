@@ -389,6 +389,31 @@ impl Store {
         exit: Option<i32>,
         interrupted: bool,
     ) -> Result<()> {
+        self.retire_with(run, task, attempt, exit, interrupted, false)
+    }
+
+    /// A controller that ended its own worker on an explicit stop (Ctrl+C or
+    /// `jtasks stop`) records that in the retirement transaction. The next run
+    /// then starts the task again instead of treating the stop as a custody gap.
+    pub fn retire_stopped(
+        &mut self,
+        run: &str,
+        task: &str,
+        attempt: &str,
+        exit: Option<i32>,
+    ) -> Result<()> {
+        self.retire_with(run, task, attempt, exit, true, true)
+    }
+
+    fn retire_with(
+        &mut self,
+        run: &str,
+        task: &str,
+        attempt: &str,
+        exit: Option<i32>,
+        interrupted: bool,
+        stopped: bool,
+    ) -> Result<()> {
         let tx = self.conn.transaction()?;
         let outcome: Option<String> =
             tx.query_row("SELECT outcome FROM attempts WHERE id=?1", [attempt], |r| {
@@ -423,6 +448,16 @@ impl Store {
             [run, task, task_state],
         )?;
         tx.execute("INSERT INTO journal(run_id,task_id,attempt_id,event,detail) VALUES(?1,?2,?3,'process_retired',?4)", [run,task,attempt,task_state])?;
+        if stopped && outcome.is_none() {
+            // The stop, not the worker or a review, ended this attempt: its
+            // review ends here so startup never reads it as a timing gap.
+            tx.execute("UPDATE execution_reviews SET state='stopped',reason='controller retired the worker on an explicit stop' WHERE attempt_id=?1 AND state IN ('scheduled','running')",[attempt])?;
+            tx.execute(
+                "UPDATE due_work SET state='cancelled' WHERE id=?1 AND state<>'complete'",
+                [format!("review-{attempt}")],
+            )?;
+            tx.execute("INSERT INTO journal(run_id,task_id,attempt_id,event,detail) VALUES(?1,?2,?3,'stop_retired','controller retired its worker on an explicit stop')", [run,task,attempt])?;
+        }
         tx.commit()?;
         Ok(())
     }

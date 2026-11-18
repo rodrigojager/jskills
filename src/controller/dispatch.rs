@@ -394,7 +394,7 @@ pub fn run_with_panel(
                             &current.id,
                         )?;
                     }
-                    store.retire(run, &current.task, &current.id, exit, true)?;
+                    store.retire_stopped(run, &current.task, &current.id, exit)?;
                 } else {
                     if current.opencode {
                         crate::executors::opencode::finish(
