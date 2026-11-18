@@ -17,9 +17,12 @@ CONTEXT_LISTS = ("requirements", "references", "dependency_artifacts", "operatio
 INTENT_KEYS = ("schema_version", "completion", "operation_placement", "scheduling", "profile_defaults")
 SPEC_KEYS = set(INTENT_KEYS) | {"compose_version", "plan", "output", "vars", "requirements", "context",
                                 "auto_references", "executors", "unknown_capabilities", "lookups", "groups",
-                                "tasks", "operations", "expect", "allow_uncovered"}
+                                "tasks", "operations", "expect", "allow_uncovered", "aliases"}
 TEMPLATE_KEYS = {"title", "executor", "requirements", "use_cases", "depends_on", "admission", "context", "lookups",
                  "vars", "tags", "recovery", "reviews", "estimate_seconds", "catalog_scope", "unknown_capabilities"}
+PROFILE_KINDS = ("claude", "codex", "opencode")
+PROFILE_FIELDS = ("provider", "model", "effort", "variant", "native_profile", "native_agent", "autonomy",
+                  "executable", "launcher_args", "prompt")
 EDGE_KINDS = ("operation", "task_candidate", "task_completed")
 
 
@@ -467,6 +470,22 @@ def compose(spec, spec_path, output):
     # Tasks.
     groups = spec.get("groups", {})
     executors = spec.get("executors", {})
+    aliases = spec.get("aliases", True)
+    require(isinstance(aliases, bool), "aliases is true or false")
+    profiles = {}
+
+    def named(name, where):
+        """A named executor: an alias reference by default, the direct executor with "aliases": false."""
+        require(name in executors, f"{where}: unknown executor '{name}'")
+        direct = executors[name]
+        convertible = (aliases and isinstance(direct, dict) and direct.get("kind") in PROFILE_KINDS
+                       and set(direct) <= {"kind", *PROFILE_FIELDS})
+        if not convertible:
+            return direct
+        require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name), f"{where}: '{name}' is not a plain alias name")
+        profiles[name] = {"executor": direct["kind"], **{k: direct[k] for k in PROFILE_FIELDS if k in direct}}
+        return {"kind": "profile", "alias": name}
+
     tasks, tags = [], {}
     for index, entry in enumerate(spec["tasks"]):
         require(isinstance(entry, dict) and "id" in entry, f"tasks[{index}]: needs an id")
@@ -500,8 +519,7 @@ def compose(spec, spec_path, output):
         item.pop("depends_on", None)
         executor = item.pop("executor")
         if isinstance(executor, str):
-            require(executor in executors, f"{where}: unknown executor '{executor}'")
-            executor = executors[executor]
+            executor = named(executor, where)
         task["executor"] = executor
         exception = item.pop("unknown_capabilities", spec.get("unknown_capabilities"))
         if exception:
@@ -521,6 +539,9 @@ def compose(spec, spec_path, output):
         admission = item.pop("admission", None)
         if admission and (admission.get("resources") or len(admission) > 1):
             task["admission"] = {**admission, "resources": scope.lines(admission.get("resources", []), where)}
+        reviews = item.get("reviews")
+        if isinstance(reviews, dict) and isinstance(reviews.get("observer"), str):
+            item["reviews"] = {**reviews, "observer": named(reviews["observer"], f"{where} reviews.observer")}
         task.update(item)
         tasks.append(task)
     ids = [t["id"] for t in tasks]
@@ -585,7 +606,7 @@ def compose(spec, spec_path, output):
     intent["tasks"] = tasks
     if operations:
         intent["operations"] = operations
-    return intent, reads
+    return intent, reads, ({"schema_version": 1, "profiles": profiles} if profiles else None)
 
 
 def summary(intent):
@@ -602,8 +623,20 @@ def summary(intent):
     return lines
 
 
-def cli_check(jtasks, root, output):
+def profiles_path(target):
+    return target.with_name(target.stem + ".profiles.json")
+
+
+def cli_check(jtasks, root, output, profiles=None):
     lines = []
+    if profiles is not None:
+        result = subprocess.run([jtasks, "--root", root, "profiles", "import", str(profiles)], capture_output=True,
+                                text=True, encoding="utf-8", errors="replace")
+        if result.returncode != 0:
+            raise ComposeError(f"jtasks profiles import refused {profiles.name}: "
+                               f"{(result.stderr or result.stdout).strip()[:2000]}")
+        lines.append(f"imported {profiles.name} into the project scope (jtasks profiles import): "
+                     f"{result.stdout.strip()[:300]}")
     for command in (["validate"], ["operations", "preview"]):
         result = subprocess.run([jtasks, "--root", root, *command, str(output)], capture_output=True, text=True,
                                 encoding="utf-8", errors="replace")
@@ -644,9 +677,13 @@ def main():
         spec = json.loads(arguments.spec.read_text(encoding="utf-8"))
         target = arguments.out or (arguments.spec.parent / spec["output"] if "output" in spec else None)
         require(target is not None, "no output: give 'output' in the spec or --out")
-        intent, reads = compose(spec, arguments.spec.resolve(), target)
+        intent, reads, profiles = compose(spec, arguments.spec.resolve(), target)
         text = json.dumps(intent, indent=1, ensure_ascii=False) + "\n"
+        profiles_file = profiles_path(target)
+        profiles_text = None if profiles is None else json.dumps(profiles, indent=1, ensure_ascii=False) + "\n"
         if arguments.check:
+            require(profiles_text is None or (profiles_file.is_file() and profiles_file.read_text(encoding="utf-8") == profiles_text),
+                    f"{profiles_file} is not what the spec composes; compose again")
             require(target.is_file() and target.read_text(encoding="utf-8") == text,
                     f"{target} is not what the spec composes; compose again")
             stale = reads.check()
@@ -655,14 +692,23 @@ def main():
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(text, encoding="utf-8", newline="\n")
             reads.write()
+            if profiles_text is not None:
+                profiles_file.write_text(profiles_text, encoding="utf-8", newline="\n")
+            elif profiles_file.is_file():
+                profiles_file.unlink()  # the spec no longer uses aliases; this file was derived by this helper
         print(f"{'checked' if arguments.check else 'wrote'} {target.as_posix()} ({len(text.encode('utf-8'))} bytes)")
         if reads.files:
             size = sum(len(c.encode("utf-8")) for c in reads.files.values())
             print(f"read files: {len(reads.files)} in {reads.folder.as_posix()} ({size} bytes)")
         for line in summary(intent):
             print(line)
+        if profiles_text is not None:
+            print(f"profiles: {len(profiles['profiles'])} alias(es) in {profiles_file.as_posix()}")
+            if not (arguments.jtasks and not arguments.check):
+                print(f"import them before validating: jtasks --root {arguments.root} profiles import {profiles_file.as_posix()}")
         if arguments.jtasks:
-            for line in cli_check(arguments.jtasks, arguments.root, target):
+            imported = profiles_file if profiles_text is not None and not arguments.check else None
+            for line in cli_check(arguments.jtasks, arguments.root, target, imported):
                 print(line)
     except (ComposeError, json.JSONDecodeError, OSError) as error:
         print(f"compose: {error}", file=sys.stderr)

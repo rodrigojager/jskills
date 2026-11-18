@@ -35,6 +35,8 @@ A task starts with a fresh context and pays, in tokens and context window, for e
 
 Pointing to a whole file is fine when the task needs all of it (an ADR, a schema, a fixture). Read files are derived like the intent: never edit them, change the plan or the spec and compose again.
 
+Executors are aliases by default: the helper writes `<name>.profiles.json` beside the intent and, with `--jtasks`, imports it into the project scope before validating (otherwise it prints the `jtasks profiles import` command). Name each alias after what its tasks do, and when tasks have estimates always give the plan an `observer` alias for the execution observer (`reviews.observer`). Set `"aliases": false` in the spec only when the user wants direct executors.
+
 The helper needs Python 3.10+ and nothing else; the Rust CLI does not need it. It never imports or runs. The spec format is in the last section of the reference, and [assets/compose.spec.json](assets/compose.spec.json) is a small complete example. Do not write a one-off generator script, and do not hand-write the JSON unless Python is unavailable.
 
 Validate through `jtasks validate <plan.json>`, then show `jtasks operations preview <plan.json>` and the task/dependency summary before execution. Include exact initial invocations, cwd, environment reference names, inputs/revision, required status, stages/consumers, repair responsibility, deadlines and capacities. Fix invalid JSON or unsupported capability choices; do not silently substitute a model or change the selected schedule. Import and run only when execution is already authorized; otherwise hand back the validated intent and preview.

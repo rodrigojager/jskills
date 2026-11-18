@@ -223,6 +223,79 @@ fn shipped_spec_composes_plan_text_and_passes_public_validation_without_state() 
     );
 }
 
+fn alias_spec(c: &Composition) {
+    c.edit_spec(|s| {
+        s["executors"] = serde_json::json!({
+            "deep": {"kind": "claude", "provider": "anthropic", "model": "claude-opus-5-5", "effort": "high"},
+            "standard": {"kind": "claude", "provider": "anthropic", "model": "claude-sonnet-5-5", "effort": "medium"},
+            "observer": {"kind": "claude", "provider": "anthropic", "model": "claude-haiku-5-5"}
+        });
+        s["unknown_capabilities"] = serde_json::json!({"actor": "test", "reason": "no account in tests"});
+        s["groups"]["slice"]["executor"] = "standard".into();
+        s["groups"]["slice"]["estimate_seconds"] = 60.into();
+        s["groups"]["slice"]["reviews"] = serde_json::json!({
+            "max_calls": 2, "deadline_seconds": 30, "observer": "observer",
+            "observer_unknown_capabilities": {"actor": "test", "reason": "no account in tests"}
+        });
+        s["tasks"][2]["executor"] = "deep".into();
+    });
+}
+
+#[test]
+fn executors_become_aliases_imported_before_validation() {
+    let c = Composition::new();
+    alias_spec(&c);
+    let jtasks = env!("CARGO_BIN_EXE_jtasks");
+    let without = c.compose(&[]);
+    assert!(without.status.success(), "{}", text(&without));
+    let hint = text(&without);
+    assert!(hint.contains("profiles import") && hint.contains("example.profiles.json"), "{hint}");
+
+    let output = c.compose(&["--jtasks", jtasks, "--root", c.fixture.root.to_str().unwrap()]);
+    assert!(output.status.success(), "{}", text(&output));
+    let summary = text(&output);
+    assert!(summary.contains("imported example.profiles.json"), "{summary}");
+    assert!(summary.contains("jtasks validate: valid=True"), "{summary}");
+
+    let file: Value =
+        serde_json::from_slice(&fs::read(c.output.with_file_name("example.profiles.json")).unwrap()).unwrap();
+    assert_eq!(file["schema_version"], 1);
+    assert_eq!(file["profiles"]["deep"]["executor"], "claude");
+    assert_eq!(file["profiles"]["deep"]["model"], "claude-opus-5-5");
+    assert_eq!(file["profiles"]["observer"]["model"], "claude-haiku-5-5");
+    assert!(file["profiles"]["observer"].get("kind").is_none());
+
+    let intent: Value = serde_json::from_slice(&fs::read(&c.output).unwrap()).unwrap();
+    let alias = |name: &str| serde_json::json!({"kind": "profile", "alias": name});
+    assert_eq!(intent["tasks"][0]["executor"], alias("standard"));
+    assert_eq!(intent["tasks"][2]["executor"], alias("deep"));
+    assert_eq!(intent["tasks"][0]["reviews"]["observer"], alias("observer"));
+
+    let list = Command::new(jtasks)
+        .args(["--root", c.fixture.root.to_str().unwrap(), "profiles", "list"])
+        .output()
+        .unwrap();
+    let list = text(&list);
+    for name in ["deep", "standard", "observer"] {
+        assert!(list.contains(&format!("\"alias\":\"{name}\"")), "{list}");
+    }
+    assert!(c.compose(&["--check"]).status.success());
+}
+
+#[test]
+fn aliases_false_keeps_direct_executors() {
+    let c = Composition::new();
+    alias_spec(&c);
+    c.edit_spec(|s| s["aliases"] = false.into());
+    let output = c.compose(&[]);
+    assert!(output.status.success(), "{}", text(&output));
+    assert!(!c.output.with_file_name("example.profiles.json").exists());
+    let intent: Value = serde_json::from_slice(&fs::read(&c.output).unwrap()).unwrap();
+    assert_eq!(intent["tasks"][0]["executor"]["kind"], "claude");
+    assert_eq!(intent["tasks"][0]["executor"]["model"], "claude-sonnet-5-5");
+    assert_eq!(intent["tasks"][0]["reviews"]["observer"]["model"], "claude-haiku-5-5");
+}
+
 #[test]
 fn read_files_follow_the_spec_and_only_their_own_files_are_removed() {
     let c = Composition::new();
