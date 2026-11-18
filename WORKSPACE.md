@@ -4,13 +4,15 @@ One row per folder (and relevant subfolder) of this repository. Keep it portable
 
 | Path | What lives there |
 |---|---|
-| `src/cli/` | public validate/import/run/status/stop/result and fixture commands |
+| `src/cli/` | public validate/import/run/status/stop/result, explicit update checks/install and fixture commands |
 | `src/domain/` | explicit plan, attempt/result contracts and dependency validation |
 | `src/storage/` | workspace resolution, SQLite schema, durable transitions and receipts |
 | `src/controller/` | sole foreground writer and sequential fixture dispatch |
 | `src/execution/`, `src/executors/` | argument-safe process launch and deterministic fixture adapter |
 | `src/resources/` | checkout-scoped kernel writer lock |
 | `src/read/`, `src/transport.rs` | read-only projections and scoped local control protocol |
+| `web/` | canonical compact read-only dashboard renderer and generic embedded transport seam |
+| `orca-plugin/` | optional Orca worker, theme-aware panel, offline CLI provisioner, verified complete-package updater, independent tests and folder/ZIP builders; excluded from the Rust crate |
 | `tests/` | focused public CLI and durable receipt scenarios |
 | `skills/source/` | canonical authoring/execution/estimator instructions and schema examples |
 | `skills/codex/`, `skills/claude/`, `skills/opencode/` | derived harness instruction packages; no copied runtime core |
@@ -61,6 +63,7 @@ parallel capacities and other completion policies arrive in later increments.
 - `README.md`
 - `AGENTS.md` (root, and folders with their own rules, up to the second level)
 - `WORKSPACE.md` (root only)
+- `orca-plugin/README.md`
 - `skills/source/to-jtasks/SKILL.md`
 - `skills/source/to-jtasks/references/authoring.md`
 - `skills/source/jtasks/SKILL.md`

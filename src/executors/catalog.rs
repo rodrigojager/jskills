@@ -404,7 +404,7 @@ fn command(executor: &str, scope: &Scope) -> Result<Command> {
 }
 /// Pipe readers retain bounded data but drain all output. No raw output/credentials
 /// are persisted or returned. Tree custody stops descendants even after leader exit.
-fn probe(
+pub(crate) fn probe(
     mut command: Command,
     args: &[&str],
     timeout: Duration,

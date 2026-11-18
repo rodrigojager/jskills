@@ -19,6 +19,8 @@ pub enum View {
     Attempts,
     Attempt,
     Activity,
+    Progress,
+    Errors,
     Operations,
     Decisions,
     Questions,
@@ -316,6 +318,7 @@ pub fn read(workspace: &Workspace, request: &Request) -> Result<Value> {
                 counts.insert(state, json!(count));
             }
             value["task_counts"] = json!(counts);
+            value["elapsed"] = elapsed(&conn, &run)?;
             value["objective"] = conn
                 .query_row(
                     "SELECT json_extract(plan,'$.context.brief') FROM runs WHERE id=?1",
@@ -387,6 +390,7 @@ pub fn read(workspace: &Workspace, request: &Request) -> Result<Value> {
             json!({"run":run,"verification_complete":snapshot.verification_complete,"pending_verification":!snapshot.verification_complete,"page":pagination(request.after,operations.len(),request.limit,total,rev),"operations":operations})
         }
         View::Decisions | View::Questions => records(&conn, &run, request)?,
+        View::Progress | View::Errors => recent_events(&conn, &run, request)?,
         View::Commands => commands(&conn, workspace, &run, request, rev)?,
         View::Command => command(
             &conn,
@@ -398,6 +402,80 @@ pub fn read(workspace: &Workspace, request: &Request) -> Result<Value> {
         View::Runs => unreachable!(),
     };
     Ok(attach(payload, meta))
+}
+
+// The legacy schema has no run-start or completion timestamp. First launch is
+// the earliest execution evidence; completed runs use their last journal event,
+// explicitly a recorded span rather than an invented completion time.
+fn elapsed(conn: &Connection, run: &str) -> Result<Value> {
+    let (start, cutoff, completed): (Option<String>, String, bool) = conn.query_row(
+        "SELECT (SELECT recorded_at FROM journal WHERE run_id=?1 AND event='launch_intent' ORDER BY sequence LIMIT 1),
+         CASE WHEN state='completed' THEN (SELECT recorded_at FROM journal WHERE run_id=?1 ORDER BY sequence DESC LIMIT 1)
+         ELSE strftime('%Y-%m-%dT%H:%M:%fZ','now') END, state='completed' FROM runs WHERE id=?1",
+        [run], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+    if start.is_none() {
+        return Ok(
+            json!({"started_at":null,"measured_at":null,"elapsed_ms":null,
+            "measurement":"unavailable","start_source":"no persisted launch intent",
+            "end_source":"no execution interval recorded"}),
+        );
+    }
+    let ms: Option<i64> = conn.query_row(
+        "SELECT max(0,CAST(round((julianday(?2)-julianday(?1))*86400000) AS INTEGER))",
+        params![start, cutoff],
+        |r| r.get(0),
+    )?;
+    Ok(
+        json!({"started_at":start,"measured_at":cutoff,"elapsed_ms":ms,
+        "measurement":if completed {"recorded_span"} else {"wall_elapsed"},
+        "start_source":"first persisted launch intent; includes pauses and controller downtime",
+        "end_source":if completed {"last persisted journal event; exact completion time was not recorded"} else {"read snapshot wall clock; controller liveness unobserved"}}),
+    )
+}
+
+/// Newest first, with an exclusive sequence cursor. This reads the run journal,
+/// never a selected task's raw output or the whole retained transcript.
+fn recent_events(conn: &Connection, run: &str, request: &Request) -> Result<Value> {
+    let errors_only = matches!(request.view, View::Errors);
+    let mut query = conn.prepare(
+        "SELECT j.sequence,j.task_id,j.attempt_id,j.event,j.detail,j.recorded_at,
+         CASE WHEN j.event IN ('result_accepted','process_retired') THEN a.summary ELSE NULL END
+         FROM journal j LEFT JOIN attempts a ON a.id=j.attempt_id AND a.run_id=j.run_id
+         WHERE j.run_id=?1 AND (?2=0 OR j.sequence<?2) AND
+         (?3=0 OR (j.event='process_retired' AND j.detail IN ('failed','needs_intervention'))
+          OR (j.event='activity' AND CASE WHEN json_valid(j.detail) THEN json_extract(j.detail,'$.severity')='error' ELSE 0 END))
+         ORDER BY j.sequence DESC LIMIT ?4",
+    )?;
+    let mut events = query
+        .query_map(
+            params![
+                run,
+                sql_cursor(request.after)?,
+                errors_only,
+                sql_limit(request.limit + 1)?
+            ],
+            |r| {
+                let raw: String = r.get(4)?;
+                Ok(
+                    json!({"sequence":nonnegative(r,0)?,"task":r.get::<_,Option<String>>(1)?,
+            "attempt":r.get::<_,Option<String>>(2)?,"event":r.get::<_,String>(3)?,
+            "detail":serde_json::from_str::<Value>(&raw).unwrap_or(Value::String(raw)),
+            "recorded_at":r.get::<_,String>(5)?,"summary":r.get::<_,Option<String>>(6)?}),
+                )
+            },
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let more = events.len() > request.limit;
+    events.truncate(request.limit);
+    let next = events
+        .last()
+        .map(|e| e["sequence"].as_u64().unwrap())
+        .unwrap_or(request.after);
+    Ok(
+        json!({"events":events,"page":{"after":request.after,"next_after":next,"has_more":more,"limit":request.limit,"order":"sequence_desc","cursor":"exclusive_before_sequence"},
+        "coverage":if errors_only {"Recorded activity errors and failed/intervention task retirements across this project. Raw stderr and unjournaled command failures are not classified."} else {"Persisted project events across all tasks, newest first. Raw executor output is available separately per attempt."}}),
+    )
 }
 
 fn check_task(conn: &Connection, run: &str, task: &str) -> Result<()> {

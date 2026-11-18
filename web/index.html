@@ -1,6 +1,8 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>jtasks · Local dashboard</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
-<body><a class="skip" href="#content">Skip to content</a><header><div><span class="eyebrow" data-i18n="readonly">LOCAL INSTANCE · READ ONLY</span><h1>jtasks</h1></div><p id="connection" role="status" data-i18n="loading">Reading persisted state…</p></header>
-<nav aria-label="Views"><a href="#overview" data-i18n="overview">Overview</a><a href="#tasks" data-i18n="tasks">Tasks</a><a href="#operations" data-i18n="operations">Operations</a><a href="#decisions" data-i18n="decisions">Decisions</a><a href="#questions" data-i18n="questions">Questions</a><a href="#commands" data-i18n="commands">Commands</a><button id="refresh" data-i18n="refresh">Refresh view</button></nav>
-<aside id="identity" aria-label="Snapshot provenance"></aside><p id="error" role="alert" hidden></p>
-<main id="content" tabindex="-1"><h2 data-i18n="loading">Loading</h2></main><footer>Persisted read snapshots. Controller and native helper liveness remain unobserved. Closing this tab never stops or schedules work.</footer></body></html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#101113"><title>jtasks · Project tasks</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<body><a class="skip" href="#content">Skip to tasks</a>
+<header class="app-header"><a class="brand" href="#overview"><span class="brand-mark" aria-hidden="true">j</span>jtasks<span class="brand-divider">/</span><span class="workspace-label">Project tasks</span></a><div class="header-actions"><span class="readonly"><i></i>Read only</span><button id="refresh" class="icon-button" aria-label="Refresh view" title="Refresh view">↻</button></div></header>
+<p id="error" role="alert" hidden></p><main id="content" tabindex="-1"><div class="loading-state">Reading your project…</div></main>
+<footer><span id="connection" role="status">Reading persisted state…</span><details class="technical"><summary>Snapshot details</summary><aside id="identity" aria-label="Snapshot provenance"></aside><p>Read-only snapshots. Current process liveness is unobserved. Closing this page never stops work.</p></details><nav aria-label="More views"><a href="#operations">Operations</a><a href="#decisions">Decisions</a><a href="#questions">Questions</a><a href="#commands">Commands</a></nav></footer>
+
+</body></html>

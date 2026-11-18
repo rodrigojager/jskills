@@ -13,6 +13,7 @@ pub mod questions;
 pub mod read;
 pub mod resources;
 pub mod retry;
+pub mod update;
 pub mod watch;
 use crate::{
     controller,
@@ -55,6 +56,8 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Action {
+    /// Check for a stable release or explicitly update this CLI installation.
+    Update(update::Update),
     /// Review or explicitly apply a declared scoped Git checkpoint.
     Checkpoint(checkpoint::Checkpoint),
     /// Inventory historical run data; execute only an unchanged approved inventory.
@@ -163,6 +166,7 @@ pub fn execute() -> Result<i32> {
     let matches = help::command().get_matches();
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
     match cli.command {
+        Action::Update(args) => update::execute(args),
         Action::Ask(args) => questions::ask(args),
         Action::Log(args) => activity::log(args),
         Action::Validate { plan } => {

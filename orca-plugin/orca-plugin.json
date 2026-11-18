@@ -1,0 +1,25 @@
+{
+  "manifestVersion": 2,
+  "execution": "trusted-worker",
+  "id": "jtasks",
+  "name": "jtasks",
+  "version": "0.1.0",
+  "description": "Project tasks, progress and recorded logs, with an automatically provisioned native CLI.",
+  "license": "MIT",
+  "engines": {"orca": ">=1.4.261"},
+  "main": "src/worker.mjs",
+  "capabilities": [{"kind":"workspace:read"},{"kind":"storage:own"},{"kind":"settings:own"},{"kind":"agent:launch"}],
+  "contributes": {
+    "panels": [{"id":"tasks","title":"jtasks","icon":"check","entry":"panel/index.html","ui":"html"}],
+    "commands": [{"id":"jtasks.open","title":"jtasks: Open project tasks","when":"workspace"}],
+    "events": [{"on":"workspace.changed"}],
+    "hooks": [{"event":"agent.launch.before","onError":"pass"}],
+    "statusBarItems": [{"id":"progress","text":"jtasks","icon":"check","command":"jtasks.open","tooltip":"Open recorded project progress"}],
+    "settings": [
+      {"key":"updateRepository","title":"Trusted update repository","type":"string","default":"","description":"GitHub owner/repo that publishes complete jtasks releases. Empty disables online updates."},
+      {"key":"checkUpdates","title":"Check for updates automatically","type":"boolean","default":true,"description":"Checks stable releases at most once per day when the panel opens. Installation requires the Update button; Orca may request approval for new access."},
+      {"key":"executable","title":"Native executable override","type":"string","default":"","description":"Optional absolute path to a compatible native jtasks executable. Otherwise provisioned automatically."},
+      {"key":"agentPath","title":"Make jtasks available to new local agents","type":"boolean","default":true,"description":"Adds the CLI directory to new local agent environments. Existing terminals and global PATH are unchanged."}
+    ]
+  }
+}

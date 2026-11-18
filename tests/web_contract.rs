@@ -110,6 +110,8 @@ fn real_http_uses_exact_shared_projections_without_control_or_runtime_writes() {
     for (view, query) in [
         (View::Status, "status"),
         (View::Tasks, "tasks"),
+        (View::Progress, "progress"),
+        (View::Errors, "errors"),
         (View::Task, "task&task=A"),
         (View::Operations, "operations"),
         (View::Decisions, "decisions"),

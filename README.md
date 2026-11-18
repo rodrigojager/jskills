@@ -24,6 +24,7 @@ pwsh -File scripts/package.ps1 -TargetDir ../_work/00-tmp/build -OutputDir ../_w
 The script builds `--locked --release`, statically links the Windows C runtime,
 creates a native ZIP (Windows) or tar.gz (Linux), its SHA-256 file, dependency
 licenses/versions, build metadata and a local Cargo `.crate` source archive.
+It also emits a raw native update asset and its SHA-256 sidecar.
 The binary archive includes local skill packages; using them does not install
 globals. Existing output packages are refused. Cargo source packaging uses
 `--no-verify` because the optimized binary was built separately; it does not claim
@@ -43,6 +44,32 @@ external jlock/jproject consumer checks must be distinguished before claiming
 release readiness. Rust target libraries alone do not supply a Linux C linker or
 runtime. Publication, installation and ecosystem consumer changes require separate
 authorization.
+
+## Updates
+
+```text
+jtasks update --check --repository owner/repo
+jtasks update --repository owner/repo
+```
+
+Use the trusted release repository, configured explicitly above or through
+`JTASKS_UPDATE_REPOSITORY` at runtime/build time. No repository is assumed.
+Checks read stable GitHub release metadata without downloading an executable or
+writing project/runtime files. Installation is explicit: verify the SHA-256
+sidecar and candidate executable's version, then replace this installation.
+There is no downgrade or automatic background replacement. Existing processes
+continue using their current version; the next launch uses the updated binary.
+
+Publish `jtasks-<version>-<rust-target>.exe` (Windows MSVC x64) or `.bin` (Linux
+GNU x64), with an identically named `.sha256` sidecar, in the configured stable
+release. Packaging produces these assets; it does not publish a release.
+Other platforms have no self-update distribution convention yet. Checks need
+HTTPS access to the repository; installation also needs write access beside the
+executable. Package-managed installations can set sibling
+`jtasks-installation.json` to `{"self_update":false,"reason":"Use the package updater"}`.
+The optional Orca plugin sets this policy for its managed CLI and updates the
+complete plugin/CLI bundle from its panel. Reused PATH installations remain
+independent. See [the optional Orca package](orca-plugin/README.md).
 
 ## Getting started
 
@@ -97,6 +124,14 @@ Runtime schema 3 rejects older development databases without migration. Use a se
 
 `status`, `read`, `watch`, `runs`, `tasks`, `task`, `attempt`, `commands`, `logs`, `activity`, `questions`, `operations status` and the controller's local read-only dashboard consume persisted facts. They never dispatch, repair, release resources or refresh discovery. Closing a watcher or browser tab leaves execution running. Read projections report their snapshot/cursor, omissions and capture gaps; they do not establish current process/helper liveness. Use explicit pagination for detail and output. Native helpers are unobserved, never presented as a known count.
 
+The controller prints its loopback dashboard URL when it starts. One compact panel integrates project progress with the complete task list: a progress bar, percentage and completed/total count, checkmarks, running spinners and muted pending tasks. Search and state filters cover every task page. Progress excludes superseded tasks; their historical rows remain visible. Graph revision changes interrupt collection rather than presenting a partial list as complete.
+
+Task rows expand inline as keyboard-accessible accordions, showing the brief, recorded outcome, durations, total attempts, dependencies and links to retained output/history. Escape collapses the row and returns focus to its summary. There is no secondary details sidebar or Full view. The panel fits narrow plugin sidebars and supports reduced motion.
+
+Total elapsed appears to the right of the completed/running/not-started counters and measures wall time since the first persisted launch intent, including pauses and controller downtime. Parallel task durations are never summed into this value. Legacy completed runs show a **recorded project span**, ending at the last journal event: the schema has no exact completion timestamp. Missing execution starts remain unavailable. Task durations retain their separate checkpoint semantics.
+
+**Tasks** (with a total-count badge), **Progress logs** and **Errors** share one keyboard-accessible tab row. The project heading and progress stay visible when switching tabs; returning to Tasks preserves its filters and expanded rows. Progress logs and Errors show project-wide recent events, independent of task selection. Pages are newest first, bounded to 15 records in the UI, with explicit Latest/Older controls and no automatic log polling. Errors cover recorded activity errors and failed/intervention task retirements; raw stderr and unjournaled command failures are not classified. `jtasks read progress --run demo` and `jtasks read errors --run demo` expose the same read-only projections with exclusive before-sequence cursors. Retained raw output remains explicitly paged in 4096-byte chunks. Native chat transcripts and current process liveness are unavailable.
+
 ```text
 jtasks watch --run demo
 jtasks watch --run demo --once --json
@@ -107,7 +142,17 @@ jtasks exec --help
 
 The common managed command service exposes start/status/output/wait/stop handles for initial checks and worker-selected follow-ups. Accepted designated outcomes and actual process retirement are separate. Exit 0 means accepted/complete according to the command; 3 means unfinished/intervention (including pending verification); 1 means error. `--help` documents each subcommand's arguments.
 
+## Optional Orca panel
+
+The optional [Orca plugin](orca-plugin/README.md) lives entirely in `orca-plugin/`.
+Its separate distribution includes the native executable and automatically
+prepares a compatible CLI when absent. It registers a real theme-aware Orca
+sidebar panel scoped to the active local workspace/run, sharing this dashboard's
+renderer through the worker bridge. The Rust CLI has no Orca or Node dependency;
+the plugin folder is excluded from the Cargo source package.
+
 ## Operations and explicit input invalidation
+
 
 Choose completion and task/group/final/none/mixed operation placement for each plan; this implementation queue's policy is not a default for future plans. Prerequisites can run before dependent work under any non-`none` placement. Task checks gate effective task completion; group/final checks gate run verification after the named producers complete. Separate task and heavy capacities permit independent development while checks run.
 

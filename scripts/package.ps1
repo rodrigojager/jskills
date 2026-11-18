@@ -99,6 +99,13 @@ try {
     }
     $archiveHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
     "$archiveHash  $([System.IO.Path]::GetFileName($archive))" | Set-Content -LiteralPath ($archive + '.sha256') -Encoding ascii
+    # Self-update consumes one native file, not an extracted source/archive tree.
+    $rawName = $name + $(if ($windowsHost) { '.exe' } else { '.bin' })
+    $raw = Join-Path $OutputDir $rawName
+    if (Test-Path -LiteralPath $raw) { throw 'Raw update asset already exists' }
+    Copy-Item -LiteralPath (Join-Path $stage $binaryName) -Destination $raw
+    $rawHash = (Get-FileHash -LiteralPath $raw -Algorithm SHA256).Hash.ToLowerInvariant()
+    "$rawHash  $rawName" | Set-Content -LiteralPath ($raw + '.sha256') -Encoding ascii
     # This creates a local source archive only, never a registry upload. The queue
     # commits after validation, so the exact working source is intentionally allowed.
     & cargo package --locked --offline --allow-dirty --no-verify --manifest-path $manifest --target-dir $TargetDir

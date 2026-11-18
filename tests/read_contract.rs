@@ -60,6 +60,105 @@ fn prepared(f: &Fixture) -> (Workspace, String) {
 }
 
 #[test]
+fn project_events_are_recent_cross_task_bounded_and_read_only() {
+    let f = Fixture::new();
+    let (w, _) = prepared(&f);
+    {
+        let conn = Connection::open(w.database()).unwrap();
+        conn.execute_batch(
+            "INSERT INTO journal(run_id,task_id,event,detail) VALUES
+            ('demo','A','activity','{\"severity\":\"info\",\"content\":\"working\"}'),
+            ('demo','B','activity','{\"severity\":\"error\",\"content\":\"cross-task failure\"}'),
+            ('demo','A','process_retired','failed'),
+            ('demo',NULL,'recovery_decided','plain non-JSON detail');",
+        )
+        .unwrap();
+        conn.execute("INSERT INTO runs(id,checkout,plan,state) SELECT 'other',checkout,plan,state FROM runs WHERE id='demo'", []).unwrap();
+        conn.execute(
+            "INSERT INTO journal(run_id,event,detail) VALUES('other','process_retired','failed')",
+            [],
+        )
+        .unwrap();
+    }
+    let before = files(&w.data);
+    let mut request = Request::new(View::Progress, Some("demo"));
+    request.limit = 2;
+    let first = projections::read(&w, &request).unwrap();
+    assert_eq!(first["events"].as_array().unwrap().len(), 2);
+    assert_eq!(first["events"][0]["detail"], "plain non-JSON detail");
+    assert_eq!(first["events"][1]["event"], "process_retired");
+    assert_eq!(first["page"]["has_more"], true);
+    request.after = first["page"]["next_after"].as_u64().unwrap();
+    let second = projections::read(&w, &request).unwrap();
+    assert_eq!(second["events"][0]["task"], "B");
+    assert_eq!(second["events"][1]["detail"]["content"], "working");
+    assert!(second["events"][0]["sequence"].as_u64().unwrap() < request.after);
+    request.view = View::Errors;
+    request.after = 0;
+    let errors = projections::read(&w, &request).unwrap();
+    assert_eq!(errors["events"].as_array().unwrap().len(), 2);
+    assert_eq!(errors["events"][0]["detail"], "failed");
+    assert_eq!(errors["events"][1]["task"], "B");
+    assert_eq!(errors["page"]["has_more"], false);
+    request.after = errors["page"]["next_after"].as_u64().unwrap();
+    assert!(
+        projections::read(&w, &request).unwrap()["events"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    request.limit = 101;
+    assert!(projections::read(&w, &request).is_err());
+    assert_eq!(files(&w.data), before);
+}
+
+#[test]
+fn elapsed_uses_execution_start_and_marks_legacy_completion_uncertainty() {
+    let f = Fixture::new();
+    f.import(json!([
+        task("A", &[], "silent", ""),
+        task("B", &[], "silent", "")
+    ]));
+    let w = workspace(&f);
+    let request = Request::new(View::Status, Some("demo"));
+    let initial = projections::read(&w, &request).unwrap();
+    assert!(initial["elapsed"]["started_at"].is_null());
+    assert!(initial["elapsed"]["elapsed_ms"].is_null());
+    {
+        let conn = Connection::open(w.database()).unwrap();
+        conn.execute_batch(
+            "UPDATE journal SET recorded_at='2020-01-01T00:00:00.000Z';
+            INSERT INTO journal(run_id,task_id,event,detail,recorded_at) VALUES
+            ('demo','A','launch_intent','persisted before spawn','2020-01-02T00:00:00.000Z'),
+            ('demo','B','launch_intent','parallel task','2020-01-02T00:00:00.000Z'),
+            ('demo','B','process_retired','completed','2020-01-02T01:00:00.000Z'),
+            ('demo','A','process_retired','completed','2020-01-02T01:00:00.000Z');",
+        )
+        .unwrap();
+    }
+    let running = projections::read(&w, &request).unwrap();
+    assert_eq!(running["elapsed"]["started_at"], "2020-01-02T00:00:00.000Z");
+    assert_eq!(running["elapsed"]["measurement"], "wall_elapsed");
+    assert!(running["elapsed"]["elapsed_ms"].as_i64().unwrap() > 3_600_000);
+    Connection::open(w.database())
+        .unwrap()
+        .execute("UPDATE runs SET state='completed' WHERE id='demo'", [])
+        .unwrap();
+    let before = files(&w.data);
+    let completed = projections::read(&w, &request).unwrap();
+    // Two concurrent hour-long intervals still span one wall-clock hour.
+    assert_eq!(completed["elapsed"]["elapsed_ms"], 3_600_000);
+    assert_eq!(completed["elapsed"]["measurement"], "recorded_span");
+    assert!(
+        completed["elapsed"]["end_source"]
+            .as_str()
+            .unwrap()
+            .contains("exact completion time was not recorded")
+    );
+    assert_eq!(files(&w.data), before);
+}
+
+#[test]
 fn all_read_surfaces_share_identity_snapshot_and_never_write_or_contact_control() {
     let f = Fixture::new();
     let (w, _) = prepared(&f);

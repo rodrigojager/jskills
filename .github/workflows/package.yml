@@ -56,4 +56,6 @@ jobs:
           path: |
             ${{ runner.temp }}/artifacts/*.${{ matrix.extension }}
             ${{ runner.temp }}/artifacts/*.sha256
+            ${{ runner.temp }}/artifacts/*.exe
+            ${{ runner.temp }}/artifacts/*.bin
             ${{ runner.temp }}/build/package/*.crate
