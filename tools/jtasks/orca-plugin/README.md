@@ -57,7 +57,12 @@ outside its built-in catalog. Use **Refresh catalog** in the Agents editor to fe
 
 ## Updates
 
-The panel's **Updates** control checks the plugin and CLI together. Configure
+The panel's **Updates** control checks the plugin and CLI together. Official
+jskills packages preconfigure `rodrigojager/jskills`. To migrate an existing
+local package, set **Trusted update repository** to `rodrigojager/jskills`, select
+**Check updates**, then select **Update** and review any Orca approval.
+
+For custom builds, configure
 `updateRepository` as the trusted GitHub `owner/repo` in plugin settings. Its
 default is empty, so unconfigured packages make no release requests. Publishers
 can embed this default when building. Automatic checks run on panel opening,

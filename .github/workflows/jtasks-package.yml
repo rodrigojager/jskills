@@ -1,6 +1,6 @@
-name: Native package smoke
+name: Package jtasks
 
-# Definition only until explicitly dispatched. No publish, install or account turn.
+# Produces tested artifacts for a separately published release.
 on:
   workflow_dispatch:
 
@@ -22,6 +22,8 @@ jobs:
             extension: tar.gz
             binary: jtasks
     runs-on: ${{ matrix.os }}
+    env:
+      JTASKS_UPDATE_REPOSITORY: ${{ github.repository }}
     defaults:
       run:
         shell: pwsh
@@ -51,6 +53,24 @@ jobs:
           if ($binaries.Count -ne 1) { throw 'Expected exactly one native binary' }
           $binary = $binaries[0]
           ./scripts/smoke.ps1 -Binary $binary.FullName -Root $pwd.Path -FixtureDir "$env:RUNNER_TEMP/smoke"
+      - uses: actions/setup-node@v4
+        if: runner.os == 'Windows'
+        with:
+          node-version: 22
+      - name: Package and test the Windows Orca distribution
+        if: runner.os == 'Windows'
+        run: |
+          $archives = @(Get-ChildItem "$env:RUNNER_TEMP/artifacts" -Filter 'jtasks-*.zip')
+          if ($archives.Count -ne 1) { throw 'Expected exactly one native ZIP' }
+          $native = Join-Path "$env:RUNNER_TEMP/artifacts" $archives[0].BaseName
+          $package = Join-Path "$env:RUNNER_TEMP/orca" 'package'
+          node orca-plugin/scripts/package.mjs $native $package win32 x64 local.jtasks
+          if ($LASTEXITCODE -ne 0) { throw 'Orca packaging failed' }
+          ./orca-plugin/scripts/archive.ps1 -PackageDir $package -OutputDir "$env:RUNNER_TEMP/artifacts"
+          $env:JTASKS_PLUGIN_TEST_EXE = Join-Path $native 'jtasks.exe'
+          $env:JTASKS_PLUGIN_TEST_DIR = Join-Path $env:RUNNER_TEMP 'orca-tests'
+          npm --prefix orca-plugin test
+          if ($LASTEXITCODE -ne 0) { throw 'Orca integration tests failed' }
       - uses: actions/upload-artifact@v4
         with:
           name: jtasks-${{ matrix.target }}

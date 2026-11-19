@@ -44,11 +44,18 @@ jtasks --version
 
 Run `jproject init ./my-project --no-index` to create a workspace without setting up an optional search index. Open your agent in the workspace root. Use `to-plan` when you are ready to write the plan, and `to-jtasks` when it is approved. Starting a task run and publishing a release each require the user's authorization.
 
-For native packaging and Orca, follow the [jtasks documentation](tools/jtasks/README.md). Builds installed from source use the source-build update behavior described there.
+Download prebuilt CLI and Orca packages from the [jskills releases](https://github.com/rodrigojager/jskills/releases). New packages use this repository for updates. Existing independent jtasks installations can switch by running:
+
+```sh
+jtasks update --check --repository rodrigojager/jskills
+jtasks update --repository rodrigojager/jskills
+```
+
+For an existing local Orca plugin, set **Trusted update repository** to `rodrigojager/jskills`, then use **Check updates** and **Update** in the Tasks panel. See the [jtasks documentation](tools/jtasks/README.md#updates) for package details.
 
 ## Source versions
 
-This collection includes jproject 0.1.3 and the jtasks 2.0.1 source with the observer retry and launcher argument fixes. The existing jtasks 2.0.1 release packages predate those fixes.
+This collection includes jproject 0.1.3 and the native Rust jtasks v2. jtasks 2.0.2 includes the observer retry and launcher argument fixes and moves official release distribution to jskills.
 
 ## Origins and licenses
 

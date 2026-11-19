@@ -3,7 +3,7 @@
   "execution": "trusted-worker",
   "id": "jtasks",
   "name": "jtasks",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "Project tasks, progress and recorded logs, with an automatically provisioned native CLI.",
   "license": "MIT",
   "engines": {"orca": ">=1.4.261"},

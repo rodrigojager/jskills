@@ -52,7 +52,14 @@ jtasks update --check --repository owner/repo
 jtasks update --repository owner/repo
 ```
 
-Use the trusted release repository, configured explicitly above or through
+Official packages from jskills come configured for the jskills release repository.
+From an older installation, pass `--repository rodrigojager/jskills` on the first
+update. An existing `JTASKS_UPDATE_REPOSITORY` environment override takes
+precedence over the embedded source. Update or clear an override that points to
+the old repository. If installed with Cargo, either configure the source
+explicitly or use the release package for a preconfigured installation.
+
+For alternate builds, set the repository explicitly above or through
 `JTASKS_UPDATE_REPOSITORY` at runtime/build time. No repository is assumed.
 Checks read stable GitHub release metadata without downloading an executable or
 writing project/runtime files. Installation is explicit: verify the SHA-256
@@ -62,7 +69,7 @@ continue using their current version; the next launch uses the updated binary.
 
 Publish `jtasks-<version>-<rust-target>.exe` (Windows MSVC x64) or `.bin` (Linux
 GNU x64), with an identically named `.sha256` sidecar, in the configured stable
-release. Packaging produces these assets; it does not publish a release.
+release. The package workflow builds and tests these assets. Publish jtasks releases as stable tags `vMAJOR.MINOR.PATCH` and mark the current one as Latest so existing updaters can find it. Publish releases for other components without making them Latest.
 Other platforms have no self-update distribution convention yet. Checks need
 HTTPS access to the repository; installation also needs write access beside the
 executable. Package-managed installations can set sibling
