@@ -44,7 +44,12 @@ jproject --version
 jtasks --version
 ```
 
-Run `jproject init ./my-project --no-index` to create a workspace without setting up an optional search index. Open your agent in the workspace root. Use `to-plan` when you are ready to write the plan, and `to-jtasks` when it is approved. Starting a task run and publishing a release each require the user's authorization.
+Run `jproject init ./my-project --no-index` to create a workspace without setting up an optional search index. The command creates two instruction files at the workspace root.
+
+- [`AGENTS.md`](tools/jproject/templates/container/AGENTS.md) tells the agent to read `_work/WORKSPACE.md` first for the workspace layout, then the `AGENTS.md` in each folder it works in, when present.
+- [`CLAUDE.md`](tools/jproject/templates/container/CLAUDE.md) imports `AGENTS.md` so Claude Code follows the same rules.
+
+Open your agent in `./my-project`, one level above `product/`. Use `to-plan` when you are ready to write the plan, and `to-jtasks` when it is approved. Starting a task run and publishing a release each require the user's authorization.
 
 Download prebuilt CLI and Orca packages from the [jskills releases](https://github.com/rodrigojager/jskills/releases). New packages use this repository for updates. Existing independent jtasks installations can switch by running:
 
