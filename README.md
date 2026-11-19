@@ -2,6 +2,24 @@
 
 Skills and command-line tools for creating software and content with AI. Use them to research existing solutions, settle design decisions, write a plan, track execution, and prepare a release. Each skill can be used on its own where its prerequisites are available.
 
+## Why jskills exists
+
+jskills adapts ideas from [Matt Pocock's agent skills](https://github.com/mattpocock/skills) so that decisions, plans, and execution can be tracked across agent sessions. It combines those practices with a workspace inspired by [Interpretable Context Methodology (ICM)](https://arxiv.org/abs/2603.16021) by Jake Van Clief and David McDermott, and with `jtasks`, the project's task runner and monitor.
+
+### From interview to execution
+
+| Step | How jskills adapts it |
+| --- | --- |
+| **Resolve design questions** | The upstream [`grill-with-docs`](https://github.com/mattpocock/skills/blob/main/skills/engineering/grill-with-docs/SKILL.md) delegates to `grilling` and `domain-modeling`. The bundled [grill-with-docs](skills/grill-with-docs/SKILL.md) includes the interview instructions and glossary and decision-record templates. It works with ordinary file and chat tools, without installing Pocock's skill suite or running its setup. It records confirmed terms and decisions and carries open questions into the handoff. |
+| **Give the work a home** | From ICM, `jproject` takes the idea of using folders and Markdown to put the right context where agents can find it. It adds a workspace map and a split between the `product/` Git repository and `_work/`. By default, glossary entries and architecture decision records (ADRs) go in `_work/10-docs/`, and the current plan and task-run data go in `_work/30-plan/`. The agent reads the map and the relevant files for its current task. |
+| **Turn the plan into trackable work** | [to-plan](skills/to-plan/SKILL.md) turns the settled discussion into a plan with success criteria and checks. Once the plan is approved, [to-jtasks](tools/jtasks/skills/source/to-jtasks/SKILL.md) turns it into versioned JSON with task dependencies, relevant context for each task, and any required checks. Its compose script builds the JSON from the plan and validates the result through `jtasks` when the CLI is provided. |
+
+### Deterministic tracking and checks
+
+`jproject check` checks workspace conventions. `jtasks validate` checks task and operation ordering before execution. When a run starts, `jtasks` follows the declared dependencies and records attempts and command results. If a check is required, the run cannot report success until that check passes. `jtasks watch` and the dashboard let you inspect progress from the stored run state. Agents still make judgments during interviews, planning, and implementation. The CLI rules make execution and completion inspectable even when the agent session changes.
+
+For example, if an interview settles what counts as a *scheduled post*, the glossary can preserve that term. The plan can require a scheduled post to stay hidden until its publication time, and the task definition can make an automated check of that behavior mandatory. The glossary gives an agent the meaning, and `jtasks` records whether the declared check passed.
+
 ## Included tools and skills
 
 | Name | What it does |
@@ -68,8 +86,6 @@ For an existing local Orca plugin, set **Trusted update repository** to `rodrigo
 
 This collection includes jproject 0.1.3 and the native Rust jtasks v2. jtasks 2.0.2 includes the observer retry and launcher argument fixes and moves official release distribution to jskills.
 
-## Origins and licenses
-
-The workspace layout draws on Jake Van Klief's ICM approach. The original interview and domain-documentation ideas draw on Matt Pocock's skills. The bundled `grill-with-docs` contains its own instructions and templates and runs with the agent's ordinary file and chat tools. It can use a jproject workspace map when present.
+## Licenses
 
 See the [shared skills license](skills/LICENSE) and the license files and notices in each component. The HTML renderer retains credits and licenses for its bundled assets.
