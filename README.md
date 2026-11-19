@@ -10,6 +10,7 @@ Skills and command-line tools for creating software and content with AI. Use the
 | [jtasks](tools/jtasks/README.md) | Runs and monitors dependent tasks, agent attempts, and verification steps. Includes an Orca integration. |
 | [existing-solutions-scout](skills/existing-solutions-scout/SKILL.md) | Searches registries and communities for existing solutions before you build. |
 | [grill-with-docs](skills/grill-with-docs/SKILL.md) | Challenges design assumptions and records the terms and decisions you confirm. |
+| [audit-other-agent](skills/audit-other-agent/SKILL.md) | Runs user-led rounds where agents challenge each other's ideas, review existing work, and explain tradeoffs so you can decide. |
 | [decision-brief](skills/decision-brief/SKILL.md) | Presents decisions as concrete questions with options, consequences, a recommendation, and previews where useful. |
 | [to-plan](skills/to-plan/SKILL.md) | Turns a discussion into a written, verifiable plan. |
 | [plan-to-html](skills/plan-to-html/README.md) | Converts Markdown plans to interactive, offline HTML. |

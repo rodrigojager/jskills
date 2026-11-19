@@ -8,6 +8,7 @@ import shutil
 ROOT = Path(__file__).resolve().parents[1]
 HOME = Path.home()
 SKILLS = (
+    "audit-other-agent",
     "decision-brief",
     "existing-solutions-scout",
     "grill-with-docs",
