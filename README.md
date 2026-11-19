@@ -8,11 +8,14 @@ jskills adapts ideas from [Matt Pocock's agent skills](https://github.com/mattpo
 
 ### From interview to execution
 
+Matt Pocock's earlier [`to-plan`](https://github.com/mattpocock/skills/blob/c5a4a8c2e966e28628f56d1bfef07f401d399df0/skills/engineering/to-plan/SKILL.md) turned a design into ordered, independently verifiable slices. He later merged that skill with `to-issues` into [`to-tickets`](https://github.com/mattpocock/skills/commit/386d4ff719a7c420ad1454232d0436b01f1b8c17). jskills keeps the path from a settled design to verifiable slices and gives the written plan and the executable task definitions their own steps.
+
 | Step | How jskills adapts it |
 | --- | --- |
 | **Resolve design questions** | The upstream [`grill-with-docs`](https://github.com/mattpocock/skills/blob/main/skills/engineering/grill-with-docs/SKILL.md) delegates to `grilling` and `domain-modeling`. The bundled [grill-with-docs](skills/grill-with-docs/SKILL.md) includes the interview instructions and glossary and decision-record templates. It works with ordinary file and chat tools, without installing Pocock's skill suite or running its setup. It records confirmed terms and decisions and carries open questions into the handoff. |
 | **Give the work a home** | From ICM, `jproject` takes the idea of using folders and Markdown to put the right context where agents can find it. It adds a workspace map and a split between the `product/` Git repository and `_work/`. By default, glossary entries and architecture decision records (ADRs) go in `_work/10-docs/`, and the current plan and task-run data go in `_work/30-plan/`. The agent reads the map and the relevant files for its current task. |
-| **Turn the plan into trackable work** | [to-plan](skills/to-plan/SKILL.md) turns the settled discussion into a plan with success criteria and checks. Once the plan is approved, [to-jtasks](tools/jtasks/skills/source/to-jtasks/SKILL.md) turns it into versioned JSON with task dependencies, relevant context for each task, and any required checks. Its compose script builds the JSON from the plan and validates the result through `jtasks` when the CLI is provided. |
+| **Write the plan** | [to-plan](skills/to-plan/SKILL.md) turns the settled discussion into a local `PLAN.md` with use cases, decisions, and ways to verify the outcome. Longer plans use linked Markdown files by topic. In a jproject workspace, the plan lives in `_work/30-plan/`, where it can be reviewed before work is split into tasks. |
+| **Prepare tasks for execution** | Pocock's [`to-tickets`](https://github.com/mattpocock/skills/blob/main/skills/engineering/to-tickets/SKILL.md) turns a plan into verifiable tickets with explicit blockers and publishes them as local files or tracker issues. [to-jtasks](tools/jtasks/skills/source/to-jtasks/SKILL.md) uses the same dependency-based approach and composes versioned JSON for the `jtasks` runner. It gives each task the plan excerpts it needs for a fresh agent session, records any required checks and when they run, and can validate the result and preview the checks before execution. |
 
 ### Deterministic tracking and checks
 
