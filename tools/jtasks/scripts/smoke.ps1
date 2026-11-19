@@ -16,7 +16,7 @@ if ($FixtureDir -eq $Root -or $FixtureDir.StartsWith($Root + [System.IO.Path]::D
     throw 'Smoke fixture must be outside the product checkout'
 }
 if (Test-Path -LiteralPath $FixtureDir) { throw 'Smoke fixture must be a new path' }
-$git = (Get-Command git -CommandType Application -ErrorAction Stop).Source
+$git = (Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 $windowsHost = [System.Environment]::OSVersion.Platform -eq 'Win32NT'
 New-Item -ItemType Directory -Path $FixtureDir | Out-Null
 $oldPath = $env:PATH
@@ -33,13 +33,16 @@ try {
     } else {
         $tools = Join-Path $FixtureDir 'tools'
         New-Item -ItemType Directory -Path $tools | Out-Null
-        New-Item -ItemType SymbolicLink -Path (Join-Path $tools 'git') -Target $git | Out-Null
+        [System.IO.File]::CreateSymbolicLink((Join-Path $tools 'git'), $git) | Out-Null
         $env:PATH = $tools
     }
     $env:JTASKS_LANG = 'en'
     foreach ($absent in @('bun', 'node', 'python', 'python3', 'claude', 'codex', 'opencode', 'jlock', 'jproject')) {
         if (Get-Command $absent -CommandType Application -ErrorAction SilentlyContinue) { throw "$absent remains available in isolated PATH" }
     }
+    $isolatedGit = (Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+    & $isolatedGit -C $Root rev-parse --absolute-git-dir | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Git could not resolve the test checkout on the isolated PATH' }
     Write-Host "Isolated runtime PATH: $env:PATH"
     $version = Invoke-Public @('--version')
     $manifestVersion = Select-String -LiteralPath (Join-Path $PSScriptRoot '../Cargo.toml') -Pattern '^version = "([^"]+)"$' |
