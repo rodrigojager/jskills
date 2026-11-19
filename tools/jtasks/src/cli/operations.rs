@@ -1,0 +1,116 @@
+use crate::controller::commands::{self, Action as ControlAction, Endpoint};
+use crate::{
+    read::projections::{self, Request, View},
+    storage::Workspace,
+};
+use anyhow::Result;
+use clap::{Args, Subcommand};
+use std::path::PathBuf;
+
+#[derive(Args)]
+pub struct Operations {
+    #[command(subcommand)]
+    pub action: Action,
+}
+#[derive(Subcommand)]
+pub enum Action {
+    /// Validate and show exactly the authored initial invocations before execution.
+    Preview { plan: PathBuf },
+    /// Read existing operation outcomes without launching or repairing anything.
+    Status {
+        #[arg(long)]
+        run: String,
+    },
+    /// Enter one charged corrective work stage for the declared responsible task.
+    RepairBegin {
+        #[arg(long)]
+        run: String,
+        #[arg(long)]
+        operation: String,
+        #[arg(long)]
+        worker: String,
+        #[arg(long)]
+        request_id: String,
+    },
+    /// Designate a retired managed command as the matching original check.
+    RepairFinish {
+        #[arg(long)]
+        report: PathBuf,
+    },
+    /// Record changed declared inputs; invalidate only matching checks and dependents.
+    InputsChanged {
+        #[arg(long)]
+        run: String,
+        #[arg(long)]
+        request_id: String,
+        #[arg(long)]
+        revision: String,
+        #[arg(long, required = true)]
+        input: Vec<String>,
+        #[arg(long)]
+        reason: String,
+    },
+}
+pub fn execute(workspace: &Workspace, command: Operations) -> Result<i32> {
+    // The named run's own controller when it is live, otherwise the standalone `exec serve` one.
+    let control = |run: &str, action| -> Result<i32> {
+        let endpoint: Endpoint = commands::endpoint_for(&workspace.data, Some(run))?;
+        println!("{}", commands::send(&endpoint, action)?);
+        Ok(0)
+    };
+    match command.action {
+        Action::Preview { plan } => {
+            let plan = super::load_plan(&plan)?;
+            println!(
+                "{}",
+                serde_json::json!({"completion":plan.completion,"operation_placement":plan.operation_placement,"operations":plan.operations})
+            );
+            Ok(0)
+        }
+        Action::Status { run } => {
+            let snapshot =
+                projections::read(workspace, &Request::new(View::Operations, Some(&run)))?;
+            println!("{}", snapshot);
+            Ok(if snapshot["verification_complete"] == true {
+                0
+            } else {
+                3
+            })
+        }
+        Action::RepairBegin {
+            run,
+            operation,
+            worker,
+            request_id,
+        } => control(
+            &run.clone(),
+            ControlAction::RepairBegin {
+                run,
+                operation,
+                worker,
+                request_id,
+            },
+        ),
+        Action::RepairFinish { report } => {
+            let report: crate::domain::operation_lineage::Recheck =
+                serde_json::from_slice(&std::fs::read(report)?)?;
+            control(&report.run.clone(), ControlAction::RepairFinish { report })
+        }
+        Action::InputsChanged {
+            run,
+            request_id,
+            revision,
+            input,
+            reason,
+        } => control(
+            &run.clone(),
+            ControlAction::InputsChanged {
+                run,
+                request_id,
+                revision,
+                inputs: input,
+                reason,
+            },
+        ),
+    }
+}

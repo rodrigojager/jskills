@@ -1,0 +1,55 @@
+{
+ "compose_version": 1,
+ "plan": "../PLAN.md",
+ "output": "example.json",
+ "completion": "judgment",
+ "operation_placement": "mixed",
+ "scheduling": {"task_capacity": 2, "heavy_capacity": 1},
+ "expect": {"tasks": 3, "operations": 2, "requirements": 3},
+ "requirements": [
+  {"use_cases": "UC"},
+  {"id": "AC-1", "text": {"file": "PLAN-delivery.md", "section": "Acceptance cases", "item": "AC-1"}}
+ ],
+ "context": {
+  "configuration": ["Example policy: judgment plus selected required checks, mixed placement. Ask each real plan's policy explicitly."],
+  "limits": ["One line per finished slice in {plan_dir}/PROGRESS.md.", "This example does not authorize executing Cargo operations or real provider turns."]
+ },
+ "executors": {
+  "demo": {"kind": "fixture", "outcome": "completed", "summary": "Example deliverable."}
+ },
+ "lookups": {
+  "slice": {"file": "PLAN-delivery.md", "section": "Slices"},
+  "files": {
+   "file": "PLAN-delivery.md", "section": "Files", "column": "Slice", "many": true,
+   "fields": {"paths": {"each": "{File}", "join": ", "}}
+  }
+ },
+ "groups": {
+  "slice": {
+   "title": "{id}: {slice.Delivers}",
+   "executor": "demo",
+   "context": {
+    "brief": "Slice {id} of the plan ({slice.#section}).",
+    "requirements": ["Delivers: {slice.Delivers}", "Proof: {slice.Proof}", "Files it owns: {files.paths}"],
+    "references": [{"read": "{id}-files", "title": "Files slice {id} owns", "from": [{"rows": "files"}]}]
+   }
+  }
+ },
+ "tasks": [
+  {"id": "S1", "group": "slice", "use_cases": [1], "admission": {"resources": ["path:src/greet.rs"]}},
+  {"id": "S2", "group": "slice", "use_cases": [2], "depends_on": ["S1"],
+   "context": {"dependency_artifacts": ["src/greet.rs from S1"]}},
+  {"id": "V1", "title": "V1: verify the service end to end", "executor": "demo", "requirements": ["AC-1"], "depends_on": ["@slice"],
+   "context": {"brief": "Verification slice.", "requirements": ["The acceptance case passes from outside the service."],
+    "references": [{"read": "acceptance", "title": "Acceptance cases", "from": [{"file": "PLAN-delivery.md", "section": "Acceptance cases"}]}]}}
+ ],
+ "operations": [
+  {"id": "toolchain", "stage": {"kind": "prerequisite", "consumers": ["@slice"]},
+   "required": true, "revision": "authored-r1", "inputs": ["Cargo.toml"],
+   "initial": {"program": "cargo", "args": ["--version"], "cwd": ".", "deadline_ms": 30000}},
+  {"id": "integration", "stage": {"kind": "final", "tasks": ["V1"]}, "depends_on": ["operation:toolchain"],
+   "required": true, "revision": "authored-r1", "inputs": ["Cargo.toml", "src", "tests"],
+   "initial": {"program": "cargo", "args": ["test", "--tests"], "cwd": ".", "deadline_ms": 180000},
+   "repair_task": "V1"}
+ ]
+}

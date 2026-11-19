@@ -1,0 +1,27 @@
+[package]
+name = "jtasks"
+version = "2.0.1"
+edition = "2024"
+rust-version = "1.89"
+description = "Independent foreground task controller"
+license = "MIT"
+exclude = ["orca-plugin/**"]
+
+[dependencies]
+anyhow = "=1.0.104"
+clap = { version = "=4.6.7", features = ["derive", "env"] }
+rusqlite = { version = "=0.38.0", features = ["bundled"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+sha2 = "=0.10.9"
+chrono = { version = "=0.4.45", default-features = false, features = ["clock"] }
+uuid = { version = "=1.29.2", features = ["v4", "serde"] }
+semver = "=1.0.27"
+self-replace = "=1.5.0"
+ureq = { version = "=3.1.2", default-features = false, features = ["rustls"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.59.0", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Console"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

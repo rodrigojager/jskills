@@ -1,0 +1,62 @@
+name: Native package smoke
+
+# Definition only until explicitly dispatched. No publish, install or account turn.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            extension: zip
+            binary: jtasks.exe
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            extension: tar.gz
+            binary: jtasks
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: tools/jtasks
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select the tested toolchain
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal
+          rustup override set 1.99.1
+      - name: Package the native optimized executable and locked source
+        run: ./scripts/package.ps1 -Target '${{ matrix.target }}' -TargetDir "$env:RUNNER_TEMP/build" -OutputDir "$env:RUNNER_TEMP/artifacts"
+      - name: Unpack and smoke the actual archive without Bun or Node
+        run: |
+          $archives = @(Get-ChildItem "$env:RUNNER_TEMP/artifacts/*.${{ matrix.extension }}")
+          if ($archives.Count -ne 1) { throw 'Expected exactly one native archive' }
+          $archive = $archives[0]
+          $unpack = "$env:RUNNER_TEMP/unpacked"
+          New-Item -ItemType Directory -Path $unpack | Out-Null
+          if ('${{ matrix.extension }}' -eq 'zip') {
+            Expand-Archive -LiteralPath $archive.FullName -DestinationPath $unpack
+          } else {
+            tar -xzf $archive.FullName -C $unpack
+            if ($LASTEXITCODE -ne 0) { throw 'Archive extraction failed' }
+          }
+          $binaries = @(Get-ChildItem $unpack -Recurse -File -Filter '${{ matrix.binary }}')
+          if ($binaries.Count -ne 1) { throw 'Expected exactly one native binary' }
+          $binary = $binaries[0]
+          ./scripts/smoke.ps1 -Binary $binary.FullName -Root $pwd.Path -FixtureDir "$env:RUNNER_TEMP/smoke"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jtasks-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/artifacts/*.${{ matrix.extension }}
+            ${{ runner.temp }}/artifacts/*.sha256
+            ${{ runner.temp }}/artifacts/*.exe
+            ${{ runner.temp }}/artifacts/*.bin
+            ${{ runner.temp }}/build/package/*.crate

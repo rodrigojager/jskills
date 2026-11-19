@@ -1,0 +1,69 @@
+<!doctype html>
+<!-- decision-brief preview. Copy, fill the OPTIONS array, open the file in a browser. One file per decision set. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Decisions: TITLE</title>
+<style>
+  :root { --bg: #f6f7f9; --card: #fff; --text: #1d2330; --muted: #5b6475; --line: #dde1e8; --accent: #2f6fde; --rec: #1f9d55; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #14171c; --card: #1d2128; --text: #e6e9ef; --muted: #9aa3b2; --line: #2c323c; --accent: #6ea0ff; --rec: #3ccf7f; } }
+  body { margin: 0; padding: 24px 16px; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, sans-serif; }
+  main { max-width: 1200px; margin: 0 auto; }
+  .context { color: var(--muted); border-left: 3px solid var(--accent); padding: 4px 12px; margin-bottom: 24px; }
+  h2 { margin: 32px 0 4px; } .why { color: var(--muted); margin: 0 0 12px; }
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+  .opt { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  .opt.rec { border-color: var(--rec); box-shadow: 0 0 0 1px var(--rec); }
+  .tag { font-size: 12px; font-weight: 600; color: var(--rec); }
+  .opt img { width: 100%; border-radius: 6px; cursor: zoom-in; border: 1px solid var(--line); }
+  .opt iframe { width: 100%; height: 320px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+  .opt pre.mermaid { background: transparent; margin: 0; }
+  dl { margin: 10px 0 0; } dt { font-weight: 600; margin-top: 6px; } dd { margin: 0; color: var(--muted); }
+  dialog { border: 0; padding: 0; background: transparent; } dialog img { max-width: 95vw; max-height: 92vh; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Decisions: TITLE</h1>
+  <p class="context">CONTEXT: 2–3 lines reminding the user which project this is, where the work stands and why these decisions are needed now.</p>
+  <div id="questions"></div>
+</main>
+<dialog id="zoom" onclick="this.close()"><img alt=""></dialog>
+<script>
+// Fill this. kind: "image" (src), "html" (src of a prototype page), "mermaid" (code), "text" (only the fields).
+const QUESTIONS = [
+  { id: "Q1", title: "Question title", why: "Why this depends on the user.",
+    options: [
+      { key: "A", name: "Option A", kind: "image", src: "q1-a.png", recommended: true,
+        pros: "…", cons: "…", ifChosen: "What happens if chosen.", ifNot: "What is lost if not." },
+      { key: "B", name: "Option B", kind: "mermaid", code: "flowchart LR\n  ui --> api --> db",
+        pros: "…", cons: "…", ifChosen: "…", ifNot: "…" },
+    ] },
+];
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const root = document.getElementById("questions");
+for (const q of QUESTIONS) {
+  const cards = q.options.map(o => {
+    const visual = o.kind === "image" ? `<img src="${esc(o.src)}" alt="${esc(o.name)}" onclick="zoomImg(this)">`
+      : o.kind === "html" ? `<iframe src="${esc(o.src)}" loading="lazy"></iframe><p><a href="${esc(o.src)}" target="_blank">open full screen</a></p>`
+      : o.kind === "mermaid" ? `<pre class="mermaid">${esc(o.code)}</pre>` : "";
+    return `<section class="opt ${o.recommended ? "rec" : ""}">
+      ${o.recommended ? '<div class="tag">RECOMMENDED</div>' : ""}
+      <h3>${esc(q.id)} ${esc(o.key)}) ${esc(o.name)}</h3>${visual}
+      <dl><dt>Pros</dt><dd>${esc(o.pros)}</dd><dt>Cons</dt><dd>${esc(o.cons)}</dd>
+      <dt>If chosen</dt><dd>${esc(o.ifChosen)}</dd><dt>If not chosen</dt><dd>${esc(o.ifNot)}</dd></dl></section>`;
+  }).join("");
+  root.insertAdjacentHTML("beforeend", `<h2>${esc(q.id)}. ${esc(q.title)}</h2><p class="why">${esc(q.why)}</p><div class="grid">${cards}</div>`);
+}
+function zoomImg(img) { const d = document.getElementById("zoom"); d.querySelector("img").src = img.src; d.showModal(); }
+</script>
+<script type="module">
+  if (document.querySelector("pre.mermaid")) {
+    const { default: mermaid } = await import("https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs");
+    mermaid.initialize({ startOnLoad: false, theme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "default" });
+    await mermaid.run();
+  }
+</script>
+</body>
+</html>
