@@ -49,7 +49,11 @@ Run `jproject init ./my-project --no-index` to create a workspace without settin
 - [`AGENTS.md`](tools/jproject/templates/container/AGENTS.md) tells the agent to read `_work/WORKSPACE.md` first for the workspace layout, then the `AGENTS.md` in each folder it works in, when present.
 - [`CLAUDE.md`](tools/jproject/templates/container/CLAUDE.md) imports `AGENTS.md` so Claude Code follows the same rules.
 
-Open your agent in `./my-project`, one level above `product/`. Use `to-plan` when you are ready to write the plan, and `to-jtasks` when it is approved. Starting a task run and publishing a release each require the user's authorization.
+Start your agent in `./my-project`, one level above `product/`, so the workspace's entry instructions are in its starting directory. The root instructions direct it to read `product/AGENTS.md` before working on the product and to consult the rules in the work folders it uses.
+
+To also teach your agent to recognize the jproject layout through its global instructions, preview the changes with `jproject rules install --dry-run`. Run `jproject rules install` to review and confirm the changes for Claude Code, Codex, and OpenCode. This step is optional when you start the agent in the workspace root. See the [jproject rules command](tools/jproject/README.md#commands).
+
+Use `to-plan` when you are ready to write the plan, and `to-jtasks` when it is approved. Starting a task run and publishing a release each require the user's authorization.
 
 Download prebuilt CLI and Orca packages from the [jskills releases](https://github.com/rodrigojager/jskills/releases). New packages use this repository for updates. Existing independent jtasks installations can switch by running:
 
