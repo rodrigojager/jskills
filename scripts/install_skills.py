@@ -11,6 +11,7 @@ SKILLS = (
     "audit-other-agent",
     "decision-brief",
     "existing-solutions-scout",
+    "fix-tool",
     "grill-with-docs",
     "plan-to-html",
     "ship-release",

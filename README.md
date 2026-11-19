@@ -16,6 +16,7 @@ Skills and command-line tools for creating software and content with AI. Use the
 | [plan-to-html](skills/plan-to-html/README.md) | Converts Markdown plans to interactive, offline HTML. |
 | [to-jtasks](tools/jtasks/skills/source/to-jtasks/SKILL.md) | Turns an approved plan into task definitions for jtasks. |
 | [estimate-jtasks](tools/jtasks/skills/source/estimate-jtasks/SKILL.md) | Fills in missing task durations while retaining estimates already in the plan. |
+| [fix-tool](skills/fix-tool/SKILL.md) | Diagnoses and fixes a tool in your repository or fork, then verifies the installed fix. |
 | [ship-release](skills/ship-release/SKILL.md) | Guides release checks, packaging, publishing, and installation within the scope you approve. |
 
 ## Install the skills
