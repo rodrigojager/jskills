@@ -1,0 +1,52 @@
+{
+  "reviewId": "cedar-invoice-demo",
+  "title": "Review the invoice page",
+  "context": "Demo · /billing/invoices/1048 · Payment due",
+  "baseline": "invoice.html",
+  "ledger": "audit.json",
+  "surface": "Invoice due",
+  "fixes": [
+    {
+      "id": "F-01",
+      "revision": 1,
+      "title": "Group the amount and due date",
+      "finding": "The spacing separates the due date from the amount it describes and pushes the payment action further down.",
+      "checkIds": ["LAY-05"],
+      "changes": [
+        {"op":"style","target":"#amount","properties":{"margin-bottom":"4px"}},
+        {"op":"style","target":"#due","properties":{"margin-bottom":"24px"}}
+      ]
+    },
+    {
+      "id": "F-02",
+      "revision": 1,
+      "title": "Remove the repeated introduction",
+      "finding": "The pill and introduction repeat the invoice heading without explaining what to do or when payment is due.",
+      "checkIds": ["CPY-03", "LAY-07"],
+      "changes": [
+        {"op":"remove","target":"#badge"},
+        {"op":"remove","target":"#intro"}
+      ]
+    },
+    {
+      "id": "F-03",
+      "revision": 1,
+      "title": "Move payment above support",
+      "finding": "The support link appears before the main action. Put payment next to the amount and due date so the reading and tab order match the task.",
+      "checkIds": ["LAY-10"],
+      "changes": [
+        {"op":"move","target":"#pay","anchor":"#help","position":"before"}
+      ]
+    },
+    {
+      "id": "F-04",
+      "revision": 1,
+      "title": "Name the payment action",
+      "finding": "Continue gives no indication of the next step. The payment button opens the payment flow.",
+      "checkIds": ["CPY-02"],
+      "changes": [
+        {"op":"text","target":"#pay","value":"Pay invoice"}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,920 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="generator" content="jdeslop">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src data:; frame-src 'self' about: blob:; base-uri 'none'; form-action 'none'">
+<title>jdeslop review</title>
+<script>
+// Keep existing review preferences across the rename.
+const preferenceKey = 'anti-slop:appearance:';
+
+const defaults = {lang: '__DEFAULT_LANG__', theme: '__DEFAULT_THEME__'};
+const darkMode = matchMedia('(prefers-color-scheme: dark)');
+function getPreference(key) {
+  try { return localStorage.getItem(preferenceKey + key); } catch { return null; }
+}
+function savePreference(key, value) {
+  try { localStorage.setItem(preferenceKey + key, value); } catch { /* Storage may be disabled. */ }
+}
+const query = new URLSearchParams(location.search);
+let language = [query.get('lang'), getPreference('lang'), defaults.lang].find(value => typeof value === 'string' && /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(value)) ?? 'en';
+let theme = [query.get('theme'), getPreference('theme'), defaults.theme].find(value => ['light', 'dark', 'system'].includes(value)) ?? 'system';
+function applyTheme() {
+  const dark = theme === 'dark' || theme === 'system' && darkMode.matches;
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  document.getElementById('theme-switch')?.setAttribute('aria-checked', String(dark));
+}
+applyTheme();
+darkMode.addEventListener('change', applyTheme);
+document.documentElement.lang = language;
+</script>
+<style>
+  :root {
+    color-scheme: light; font: 14px/1.45 system-ui, sans-serif;
+    --ink:#20312c; --muted:#52645c; --surface:#fff;
+    --line:#d6ded8; --accent:#24614f; --selected:#e6f2ec;
+    --canvas:#e5eae6; --warning:#7b4227; --page:#f7f9f7; --input:#f9fbf9;
+    --on-accent:#fff; --accent-hover:#174f3e; --strong-line:#83a596; --frame-line:#aebdb4;
+  }
+  :root[data-theme="dark"] {
+    color-scheme:dark; --ink:#e4eee8; --muted:#a7b9ae; --surface:#19241f;
+    --line:#35453c; --accent:#99dac0; --selected:#294339; --canvas:#111a15; --warning:#ffce97;
+    --page:#141d18; --input:#15211b; --on-accent:#142820; --accent-hover:#b6ead5;
+    --strong-line:#567a69; --frame-line:#496354;
+  }
+  * { box-sizing:border-box }
+  [hidden] { display:none !important }
+  body { margin:0; height:100dvh; display:flex; flex-direction:column; background:var(--page); color:var(--ink) }
+  header { flex:none; display:flex; flex-wrap:wrap; align-items:center; gap:12px; padding:16px 22px; background:var(--surface); border-bottom:1px solid var(--line) }
+  h1,h2,p { margin:0 }
+  h1 { font-size:1.15rem; font-weight:660 }
+  h2 { font-size:.96rem }
+  header .project { margin-right:auto; min-width:0 }
+  header p { color:var(--muted); font-size:.86rem; overflow-wrap:anywhere }
+  .icon-library { position:absolute; width:0; height:0; overflow:hidden }
+  .icon { display:inline-block; width:1rem; height:1rem; flex:none; vertical-align:-.16em; fill:none; stroke:currentColor; stroke-width:1.65; stroke-linecap:round; stroke-linejoin:round }
+  button,select,input,textarea { color:inherit; font:inherit }
+  button,select { border:1px solid var(--line); background:var(--surface); padding:7px 11px; border-radius:6px }
+  button { cursor:pointer }
+  button:has(.icon) { display:inline-flex; align-items:center; justify-content:center; gap:6px }
+  button:hover:not(:disabled), button[aria-pressed="true"], button[aria-current="step"] { background:var(--selected); border-color:var(--strong-line) }
+  button:disabled { opacity:.48; cursor:default }
+  :focus-visible { outline:2px solid var(--accent); outline-offset:2px }
+  .workspace { flex:1; min-height:0; display:grid; grid-template-columns:minmax(224px, min(23vw, 315px)) minmax(0, 1fr); grid-template-rows:minmax(0, 1fr) }
+  aside { display:flex; flex-direction:column; background:var(--surface); padding:16px; border-inline-end:1px solid var(--line); min-width:0; min-height:0 }
+  .panel-title, .step-meta { display:flex; align-items:center; justify-content:space-between; gap:10px }
+  .panel-title span,.step-meta span,.hint,.item-meta { color:var(--muted); font-size:.83rem }
+  .queue { position:relative; min-height:0; overflow:auto; display:flex; flex-direction:column; gap:5px; padding:4px 2px; margin-top:9px }
+  .queue button { text-align:start; display:flex; flex-direction:column; align-items:flex-start; gap:2px; overflow-wrap:anywhere }
+  .queue-actions { display:grid; gap:5px; margin-top:10px }
+  .live-link { color:var(--accent); font-size:.86rem }
+  .work { min-width:0; min-height:0; display:flex; flex-direction:column }
+  .work > :not(.stage) { flex:none }
+  .toolbar { display:grid; gap:9px; padding:12px 16px; background:var(--surface); border-bottom:1px solid var(--line) }
+  .toolbar-row,.group { display:flex; align-items:center; flex-wrap:wrap; gap:5px }
+  .toolbar-row { justify-content:space-between; gap:8px 18px }
+  .review-actions { justify-content:flex-end; margin-inline-start:auto }
+  .toolbar button,.toolbar select { min-height:36px }
+  .toolbar label { white-space:nowrap }
+  .view-options { gap:8px 14px }
+  .scope { display:inline-flex; align-items:center; gap:6px; min-height:36px; cursor:pointer }
+  .scope input { margin:0; width:16px; height:16px; accent-color:var(--accent) }
+  .scope:has(:disabled) { color:var(--muted); cursor:default }
+  .view-caption { color:var(--muted); font-size:.83rem }
+  .preview-tools { gap:8px 12px }
+  #effect-title { overflow-wrap:anywhere }
+  #message { margin:8px 16px; color:var(--warning); font-size:.9rem }
+  .stage { flex:1; min-width:0; min-height:7rem; display:flex; align-items:stretch; overflow-x:auto; overflow-y:hidden; padding:16px; background:var(--canvas) }
+  #canvas { flex:none; display:block; width:100%; margin-inline:auto; border:1px solid var(--frame-line); background:white; color-scheme:normal }
+  .detail { padding:8px 16px; background:var(--surface); border-top:1px solid var(--line) }
+  .detail p { overflow-wrap:anywhere }
+  .detail p:not(:empty) { margin-top:4px }
+  #change-popover { position:fixed; inset:auto; margin:0; width:min(23rem, calc(100vw - 24px)); max-height:calc(100dvh - 24px); overflow:auto; padding:14px; border:1px solid var(--line); border-radius:10px; background:var(--surface); color:var(--ink); box-shadow:0 12px 30px #14272030 }
+  #change-form { display:grid; gap:8px }
+  #note { width:100%; min-height:90px; max-height:min(180px, 35dvh); resize:vertical; border:1px solid var(--line); background:var(--input); border-radius:5px; padding:8px }
+  .popover-actions { justify-content:flex-end; margin-top:4px }
+  .primary { background:var(--accent); border-color:var(--accent); color:var(--on-accent) }
+  .primary:hover:not(:disabled) { background:var(--accent-hover); border-color:var(--accent-hover) }
+  .primary[aria-pressed="true"]:not(:hover) { color:var(--ink) }
+  .status-line { color:var(--muted); font-size:.84rem; overflow-wrap:anywhere }
+  .status-line:not(:empty) { padding:5px 16px; border-top:1px solid var(--line) }
+  dialog { background:var(--surface); color:var(--ink); border:1px solid var(--line); border-radius:8px; padding:18px; width:min(680px, calc(100vw - 28px)); max-height:80dvh }
+  dialog::backdrop { background:#14272079 }
+  .check { border-top:1px solid var(--line); padding:10px 0; margin-top:8px; overflow-wrap:anywhere }
+  .check .group { margin-top:5px }
+  @media (max-width:720px) {
+    header { padding:10px; gap:7px }
+    .workspace { display:flex; flex-direction:column }
+    aside { flex:none; border-inline-end:0; border-bottom:1px solid var(--line); padding:10px }
+    .queue { max-height:min(150px, 17dvh) }
+    .work { flex:1 }
+    .toolbar,.stage,.detail { padding:9px }
+    .review-actions { gap:4px }
+    .review-actions button { padding-inline:8px }
+  }
+  @media (max-width:460px) {
+    header .project { flex-basis:100% }
+    header button { padding:5px 7px; font-size:.86rem; min-height:34px }
+    :is(#export,#import) { min-width:34px }
+    :is(#export,#import) span {
+      position:absolute; width:1px; height:1px; padding:0; overflow:hidden;
+      clip-path:inset(50%); white-space:nowrap;
+    }
+    .toolbar { font-size:.9rem }
+    .toolbar button { padding-inline:7px }
+    .view-options { gap:6px 10px }
+  }
+  @media (max-width:720px) and (max-height:740px) {
+    .queue { max-height:64px }
+    .detail { padding-block:6px }
+  }
+
+  .appearance { display:inline-flex; align-items:center; gap:6px; margin-inline-start:auto; white-space:nowrap }
+  .appearance button,.appearance select { min-height:34px; padding:4px 7px }
+  .appearance button { min-width:34px; display:inline-grid; place-items:center }
+  .appearance svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round }
+  .appearance .theme-moon, :root[data-theme="dark"] .appearance .theme-sun { display:none }
+  :root[data-theme="dark"] .appearance .theme-moon { display:block }
+</style>
+<svg class="icon-library" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+  <symbol id="icon-original" viewBox="0 0 20 20"><path d="M4 8a6 6 0 1 1 .5 5M4 4v4h4"/><path d="M10 6.5V10l2 1.5"/></symbol>
+  <symbol id="icon-before" viewBox="0 0 20 20"><path d="M15.5 10h-11m4-4-4 4 4 4m7-9v10"/></symbol>
+  <symbol id="icon-after" viewBox="0 0 20 20"><path d="M4.5 10h11m-4-4 4 4-4 4m-7-9v10"/></symbol>
+  <symbol id="icon-prev" viewBox="0 0 20 20"><path d="m12 5-5 5 5 5"/></symbol>
+  <symbol id="icon-next" viewBox="0 0 20 20"><path d="m8 5 5 5-5 5"/></symbol>
+  <symbol id="icon-play" viewBox="0 0 20 20"><path d="m7 4 9 6-9 6Z"/></symbol>
+  <symbol id="icon-pause" viewBox="0 0 20 20"><path d="M7 4.5v11m6-11v11"/></symbol>
+  <symbol id="icon-skip" viewBox="0 0 20 20"><path d="m4.5 5 7 5-7 5ZM15 5v10"/></symbol>
+  <symbol id="icon-note" viewBox="0 0 20 20"><path d="M4 4h12v9H9l-5 3V4Zm3 3h6m-6 3h4"/></symbol>
+  <symbol id="icon-check" viewBox="0 0 20 20"><path d="m4 10 4 4 8-8"/></symbol>
+  <symbol id="icon-clear" viewBox="0 0 20 20"><path d="m5 5 10 10m0-10L5 15"/></symbol>
+  <symbol id="icon-batch" viewBox="0 0 20 20"><path d="m2.5 10 3.5 3.5 7-7m-4 6 2 2 6.5-7"/></symbol>
+  <symbol id="icon-external" viewBox="0 0 20 20"><path d="M11 4h5v5m0-5-7 7m-2-6H4v11h11v-3"/></symbol>
+  <symbol id="icon-list" viewBox="0 0 20 20"><path d="m3 6 1.5 1.5L7 5m-4 9 1.5 1.5L7 13m2-7h7m-7 8h7"/></symbol>
+  <symbol id="icon-download" viewBox="0 0 20 20"><path d="M10 3v9m-3-3 3 3 3-3m-9 4v3h12v-3"/></symbol>
+  <symbol id="icon-upload" viewBox="0 0 20 20"><path d="M10 12V3m-3 3 3-3 3 3m-9 7v3h12v-3"/></symbol>
+  <symbol id="icon-send" viewBox="0 0 20 20"><path d="M3 4.5 17 10 3 15.5 5.5 10Zm2.5 5.5H17"/></symbol>
+</svg>
+<header>
+  <div class="project"><h1 id="title"></h1><p id="context"></p></div>
+  <button id="coverage"><svg class="icon" aria-hidden="true"><use href="#icon-list"/></svg><span>Coverage</span></button>
+  <button id="export" title="Export review"><svg class="icon" aria-hidden="true"><use href="#icon-download"/></svg><span>Export review</span></button>
+  <button id="import" title="Import review"><svg class="icon" aria-hidden="true"><use href="#icon-upload"/></svg><span>Import review</span></button>
+
+  <div class="appearance">
+    <button id="theme-switch" type="button" role="switch" aria-checked="false" aria-label="Dark theme" title="Dark theme">
+      <svg class="theme-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg>
+      <svg class="theme-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.8 14A9 9 0 0 1 10 3.2 9 9 0 1 0 20.8 14Z"/></svg>
+    </button>
+    <select id="language-switch" aria-label="Language" title="Language">
+      <option value="en" lang="en">EN</option>
+      <option value="pt-BR" lang="pt-BR">PT</option>
+    </select>
+  </div>
+  <input id="import-file" type="file" accept=".json,application/json" hidden>
+</header>
+<main class="workspace">
+  <aside>
+    <div class="panel-title"><h2>Corrections</h2><span id="progress"></span></div>
+    <div class="queue-actions" id="source-actions" hidden>
+      <button id="queue-all"><svg class="icon" aria-hidden="true"><use href="#icon-batch"/></svg><span>Approve and queue all</span></button>
+      <p id="queue-summary" class="hint" role="status"></p>
+    </div>
+    <nav class="queue" id="queue" aria-label="Corrections"></nav>
+  </aside>
+  <section class="work" aria-label="Visual comparison">
+    <div class="toolbar">
+      <div class="toolbar-row">
+        <div class="group" role="group" aria-label="Preview mode">
+          <button id="original" aria-pressed="true"><svg class="icon" aria-hidden="true"><use href="#icon-original"/></svg>Original</button>
+          <button id="before" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#icon-before"/></svg>Before fix</button>
+          <button id="after" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#icon-after"/></svg>After fix</button>
+        </div>
+        <div class="group review-actions" id="review-actions" role="group" aria-label="Correction decisions">
+          <button id="skip" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#icon-skip"/></svg>Skip</button>
+          <button id="revise" popovertarget="change-popover" aria-haspopup="dialog" aria-controls="change-popover" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#icon-note"/></svg>Request changes</button>
+          <button id="keep" class="primary" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#icon-check"/></svg><span>Keep</span></button>
+          <button id="clear" aria-label="Clear decision" title="Clear decision" hidden><svg class="icon" aria-hidden="true"><use href="#icon-clear"/></svg></button>
+        </div>
+      </div>
+      <div class="toolbar-row">
+        <div class="group view-options">
+          <div class="group" role="group" aria-label="Sequence">
+            <button id="previous" aria-label="Previous step" title="Previous step"><svg class="icon" aria-hidden="true"><use href="#icon-prev"/></svg></button>
+            <button id="next" aria-label="Next step" title="Next step"><svg class="icon" aria-hidden="true"><use href="#icon-next"/></svg></button>
+            <button id="play"><svg class="icon" aria-hidden="true"><use href="#icon-play"/></svg><span>Play sequence</span></button>
+          </div>
+          <label class="scope"><input id="include-earlier" type="checkbox" checked>Include earlier fixes</label>
+        </div>
+        <div class="group preview-tools">
+          <label id="surface-label" hidden>Page or state <select id="surface"></select></label>
+          <a id="live" class="live-link" target="_blank" rel="noopener noreferrer" hidden><svg class="icon" aria-hidden="true"><use href="#icon-external"/></svg> Open live page</a>
+          <label>Width
+            <select id="width">
+              <option value="fit">Fit</option>
+              <option value="390">390 px</option>
+              <option value="768">768 px</option>
+              <option value="1200">1200 px</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <p class="view-caption" id="view-caption"></p>
+    </div>
+    <p id="message" role="status" hidden></p>
+    <div class="stage"><iframe id="canvas" title="Visual snapshot" sandbox="allow-same-origin" referrerpolicy="no-referrer"></iframe></div>
+    <div class="detail">
+      <div class="step-meta"><h2 id="effect-title"></h2><span id="position"></span></div>
+      <p id="finding"></p>
+      <p id="linked" class="hint"></p>
+      <p id="source-status" class="hint" role="status" hidden></p>
+    </div>
+    <div id="notice" class="status-line" role="status"></div>
+  </section>
+</main>
+<div id="change-popover" popover="auto" role="dialog" aria-labelledby="change-title">
+  <form id="change-form">
+    <h2 id="change-title">Request changes</h2>
+    <label for="note">What should change?</label>
+    <textarea id="note" maxlength="8000" placeholder="Describe what you want to change" required></textarea>
+    <div class="group popover-actions">
+      <button type="button" id="cancel-change"><svg class="icon" aria-hidden="true"><use href="#icon-clear"/></svg>Cancel</button>
+      <button type="submit" id="send-change" class="primary"><svg class="icon" aria-hidden="true"><use href="#icon-send"/></svg>Send request</button>
+    </div>
+  </form>
+</div>
+<dialog id="coverage-dialog" aria-labelledby="coverage-title">
+  <div class="panel-title"><h2 id="coverage-title">Audit coverage</h2><form method="dialog"><button>Close</button></form></div>
+  <div id="checks"></div>
+</dialog>
+<script type="application/json" id="review-data">__REVIEW_PAYLOAD__</script>
+<script>
+  'use strict';
+  const locales = __REVIEW_LOCALES__;
+
+function t(message, ...values) {
+  const key = typeof message === 'string' ? message : message.map((part, index) => (index ? '{' + (index - 1) + '}' : '') + part).join('');
+  const messages = locales[language]?.messages ?? locales.en.messages;
+  const format = Object.hasOwn(messages, key) ? messages[key] : key;
+  return values.length ? format.replace(/\{(\d+)\}/g, (_, index) => values[index]) : format;
+}
+function connectPreferences(onLanguageChange) {
+  if (!Object.hasOwn(locales, language)) language = Object.hasOwn(locales, defaults.lang) ? defaults.lang : 'en';
+  document.documentElement.lang = language;
+  const chrome = [];
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const source = node.textContent;
+    if (!node.parentElement.closest('script, style') && Object.hasOwn(locales.en.messages, source.trim())) {
+      chrome.push(() => { node.textContent = source.replace(source.trim(), () => t(source.trim())); });
+    }
+  }
+  for (const node of document.querySelectorAll('[aria-label], [placeholder], [title]')) {
+    for (const name of ['aria-label', 'placeholder', 'title']) {
+      const source = node.getAttribute(name);
+      if (Object.hasOwn(locales.en.messages, source)) chrome.push(() => node.setAttribute(name, t(source)));
+    }
+  }
+  const themeSwitch = document.getElementById('theme-switch');
+  const languageSwitch = document.getElementById('language-switch');
+  function remember(key, value) {
+    savePreference(key, value);
+    const url = new URL(location.href);
+    url.searchParams.delete(key);
+    try { history.replaceState(null, '', url); } catch { /* A portable file may restrict history. */ }
+  }
+  themeSwitch.onclick = () => {
+    theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+    remember('theme', theme);
+    applyTheme();
+  };
+  languageSwitch.replaceChildren(...Object.entries(locales).map(([code, locale]) => {
+    const option = new Option(locale.label, code);
+    option.lang = code;
+    return option;
+  }));
+  languageSwitch.value = language;
+  applyTheme();
+  chrome.forEach(update => update());
+  languageSwitch.onchange = () => {
+    language = languageSwitch.value;
+    remember('lang', language);
+    document.documentElement.lang = language;
+    chrome.forEach(update => update());
+    onLanguageChange();
+  };
+}
+  const data = JSON.parse(document.getElementById('review-data').textContent);
+  const $ = id => document.getElementById(id);
+  const byId = new Map(data.fixes.map((fix, index) => [fix.id, index]));
+  const surfaces = new Map(data.surfaces.map(surface => [surface.id, surface]));
+  const statusNames = {keep:'Kept', skip:'Skipped', revise:'Changes requested'};
+  const jobNames = {queued:'Queued', waiting:'Waiting for prerequisite', applying:'Applying', applied:'Applied',
+    failed:'Failed', interrupted:'Interrupted', blocked:'Blocked'};
+  const storageKey = 'ui-anti-slop-review:' + data.reviewId;
+  const previewPolicy = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src data:; base-uri 'none'; form-action 'none'";
+  const modes = ['original', 'before', 'after'];
+  const source = data.sourceQueue;
+  const sourceReady = new Set(source?.available);
+  const submitting = new Set();
+  const previewFailures = new Map();
+  let jobs = new Map();
+  let connected = !source;
+  let commands = Promise.resolve();
+  let requestVersion = 0;
+  let latestResponse = 0;
+  let surface = data.surfaces[0];
+  let decisions = new Map();
+  let current = -1;
+  let mode = 'original';
+  let includeEarlier = true;
+  let timer = null;
+  let paused = false;
+  let activeDocument = '';
+  let activeSurface;
+  let pendingFrame;
+  let frameRevision = 0;
+  const scrollPositions = new Map();
+
+  function element(tag, value, className) {
+    const node = document.createElement(tag);
+    node.textContent = value;
+    if (className) node.className = className;
+    return node;
+  }
+
+  function changesOn(fix, surfaceId) {
+    return Object.hasOwn(fix.changesBySurface, surfaceId) ? fix.changesBySurface[surfaceId] : [];
+  }
+
+  function selectTarget(root, selector) {
+    let matches;
+    try { matches = root.querySelectorAll(selector); }
+    catch { throw new Error(t('Invalid selector: ') + selector); }
+    if (matches.length !== 1) throw new Error(selector + t(' matched ') + matches.length + t(' elements.'));
+    const target = matches[0];
+    const body = root.querySelector('body');
+    if (!body.contains(target) || target === body) {
+      throw new Error(selector + t(' must select visible content inside the page body.'));
+    }
+    return target;
+  }
+
+  function applyChanges(root, changes, highlight = false) {
+    for (const change of changes) {
+      const node = selectTarget(root, change.target);
+      if (highlight) (change.op === 'remove' ? node.parentElement : node).setAttribute('data-review-target', '');
+      if (change.op === 'style') {
+        for (const [property, value] of Object.entries(change.properties)) {
+          if (value === null) node.style.removeProperty(property);
+          else {
+            const important = /\s*!important\s*$/i.test(value);
+            const css = important ? value.replace(/\s*!important\s*$/i, '') : value;
+            if (!CSS.supports(property, css)) throw new Error(t('Invalid CSS value for ') + property + '.');
+            node.style.setProperty(property, css, important ? 'important' : '');
+          }
+        }
+      } else if (change.op === 'text') {
+        if (node.children.length) throw new Error(change.target + t(' must be a leaf element to change its text.'));
+        node.textContent = change.value;
+      } else if (change.op === 'move') {
+        const anchor = selectTarget(root, change.anchor);
+        if (node.contains(anchor)) throw new Error(t('A move cannot use its own element or a descendant as the anchor.'));
+        anchor[change.position](node);
+      } else {
+        node.remove();
+      }
+    }
+  }
+
+  function baselineDocument(html) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    for (const node of doc.querySelectorAll('script, iframe, frame, object, embed, portal, link, base, meta[http-equiv]')) node.remove();
+    for (const node of doc.querySelectorAll('a, area')) {
+      for (const name of ['href', 'xlink:href']) {
+        if (!node.getAttribute(name)?.startsWith('#')) node.removeAttribute(name);
+      }
+      node.removeAttribute('ping');
+    }
+    const policy = doc.createElement('meta');
+    policy.httpEquiv = 'Content-Security-Policy';
+    policy.content = previewPolicy;
+    doc.head.prepend(policy);
+    const highlight = doc.createElement('style');
+    highlight.textContent = '[data-review-target]{outline:2px solid #008268 !important;outline-offset:2px !important}';
+    doc.head.append(highlight);
+    return doc.documentElement;
+  }
+
+  const baselines = new Map(data.surfaces.map(surface => [surface.id, baselineDocument(surface.baseline)]));
+
+  function renderCandidate(surfaceId, at, view, {highlight = false, cumulative = true} = {}) {
+    let root = baselines.get(surfaceId).cloneNode(true);
+    const applied = new Set();
+    const errors = [];
+    if (view === 'original' || at < 0) return {root, applied, errors};
+    const needed = new Set();
+    function include(index) {
+      if (needed.has(index)) return;
+      needed.add(index);
+      for (const id of data.fixes[index].requires) include(byId.get(id));
+    }
+    if (!cumulative) include(at);
+    const through = view === 'before' ? at - 1 : at;
+    for (let index = 0; index <= through; index++) {
+      const fix = data.fixes[index];
+      if (!cumulative && !needed.has(index)) continue;
+      if (cumulative && ['skip', 'revise'].includes(decisions.get(fix.id)?.choice)) continue;
+      const missing = fix.requires.filter(id => !applied.has(id));
+      if (missing.length) {
+        errors.push(fix.id + t(' requires ') + missing.join(', ') + '.');
+        continue;
+      }
+      const changes = changesOn(fix, surfaceId);
+      try {
+        if (changes.length) {
+          const candidate = root.cloneNode(true);
+          applyChanges(candidate, changes, highlight && index === at);
+          root = candidate;
+        }
+        applied.add(fix.id);
+      } catch (error) {
+        errors.push(fix.id + ' · ' + error.message);
+      }
+    }
+    if (highlight && view === 'before') {
+      for (const change of changesOn(data.fixes[at], surfaceId)) {
+        try { selectTarget(root, change.target).setAttribute('data-review-target', ''); }
+        catch { /* Some selectors exist only after an earlier operation in the same step. */ }
+      }
+    }
+    return {root, applied, errors};
+  }
+
+  function stop(remember = false) {
+    clearInterval(timer);
+    timer = null;
+    paused = remember;
+    updatePlayback();
+  }
+
+  function updatePlayback() {
+    const playing = timer !== null;
+    $('play').querySelector('span').textContent = playing ? t('Pause sequence') : paused ? t('Resume sequence') : t('Play sequence');
+    $('play').querySelector('use').setAttribute('href', playing ? '#icon-pause' : '#icon-play');
+  }
+
+  function select(index, view = 'after') {
+    if (index !== current) $('change-popover').hidePopover();
+    current = index;
+    mode = current < 0 ? 'original' : view;
+    render(true);
+  }
+
+  function selectCorrection(index) {
+    const decision = decisions.get(data.fixes[index]?.id);
+    if (['skip', 'revise'].includes(decision?.choice)) includeEarlier = false;
+    select(index);
+  }
+
+  function captureScroll(frame) {
+    const view = frame.contentWindow;
+    const doc = frame.contentDocument;
+    const containers = [...doc.querySelectorAll('[id]')]
+      .filter(node => node !== doc.scrollingElement && (node.scrollTop || node.scrollLeft))
+      .map(node => [node.id, node.scrollLeft, node.scrollTop]);
+    return {x:view.scrollX, y:view.scrollY, containers};
+  }
+
+  function render(scroll = false) {
+    const fix = data.fixes[current];
+    const atOriginal = mode === 'original';
+    const {root, applied, errors} = renderCandidate(surface.id, current, mode, {highlight:true, cumulative:includeEarlier});
+    const nextDocument = '<!doctype html>' + root.outerHTML;
+    if (nextDocument !== activeDocument || surface.id !== activeSurface) {
+      if (activeSurface && !pendingFrame) {
+        scrollPositions.set(activeSurface, captureScroll($('canvas')));
+      }
+      const revision = String(++frameRevision);
+      pendingFrame = {surfaceId: surface.id, revision};
+      root.setAttribute('data-review-frame', revision);
+      $('canvas').srcdoc = '<!doctype html>' + root.outerHTML;
+      activeDocument = nextDocument;
+      activeSurface = surface.id;
+    }
+    $('effect-title').textContent = atOriginal ? 'Original' : fix.title;
+    $('position').textContent = fix ? (current + 1) + ' / ' + data.fixes.length : t('Starting point');
+    $('finding').textContent = atOriginal ? t('Baseline snapshot. Select a correction to see what changes.') : fix.finding;
+    $('linked').textContent = atOriginal ? '' : fix.id + t(' · revision ') + fix.revision + ' · ' + fix.checkIds.join(', ') +
+      (changesOn(fix, surface.id).length ? '' : t(' · No change on this page or state'));
+    $('progress').textContent = decisions.size + ' / ' + data.fixes.length + t(' reviewed');
+    $('message').textContent = errors.join(' ');
+    $('message').hidden = !errors.length;
+    $('previous').disabled = current < 0;
+    $('next').disabled = current >= data.fixes.length - 1;
+    $('play').disabled = !data.fixes.length;
+    for (const choice of modes) {
+      $(choice).setAttribute('aria-pressed', String(choice === mode));
+      $(choice).disabled = choice !== 'original' && current < 0;
+    }
+    $('include-earlier').checked = includeEarlier;
+    $('include-earlier').disabled = atOriginal;
+    if (atOriginal) {
+      $('view-caption').textContent = t('Original page. Select a fix to compare its before and after.');
+    } else {
+      const scope = includeEarlier ? t('Earlier eligible fixes are included.') :
+        fix.requires.length ? t('Required fixes are included.') :
+        mode === 'before' ? t('No fixes are shown.') : t('Only this fix is shown.');
+      $('view-caption').textContent = mode === 'before'
+        ? t`Before fix ${current + 1} of ${data.fixes.length}. ${scope}`
+        : t`After fix ${current + 1} of ${data.fixes.length}. ${scope}`;
+    }
+    const reviewable = !atOriginal && mode !== 'before' && applied.has(fix.id) && changesOn(fix, surface.id).length;
+    const fixId = fix?.id;
+    const decision = decisions.get(fixId);
+    const hasSourceEdit = sourceReady.has(fixId);
+    const locked = !reviewable || !connected && hasSourceEdit || jobs.has(fixId) || submitting.has(fixId);
+    for (const choice of ['keep', 'skip']) $(choice).setAttribute('aria-pressed', String(decision?.choice === choice));
+    $('skip').disabled = locked;
+    $('revise').disabled = locked;
+    $('keep').disabled = locked || hasSourceEdit && Boolean(approvalIssue(fix));
+    $('clear').hidden = !reviewable || !decision || jobs.has(fixId);
+    $('clear').disabled = locked;
+    $('keep').querySelector('span').textContent = hasSourceEdit || !fix && source ? t('Approve and queue') : t('Keep');
+    if (locked && $('change-popover').matches(':popover-open')) $('change-popover').hidePopover();
+    const job = fix && jobs.get(fix.id);
+    $('source-status').hidden = !source || !fix || atOriginal;
+    $('source-status').textContent = job ? t(jobNames[job.status]) + (job.detail ? ' · ' + job.detail : '') :
+      fix && !sourceReady.has(fix.id) ? t('Preview only · No source edit prepared') :
+      fix && submitting.has(fix.id) ? t('Submitting approval…') :
+      fix && sourceReady.has(fix.id) ? approvalIssue(fix) : '';
+    for (const [index, button] of [...$('queue').children].entries()) {
+      const item = data.fixes[index];
+      const decision = decisions.get(item.id);
+      const execution = jobs.get(item.id);
+      button.lastElementChild.textContent = item.id + ' · ' + (execution ? t(jobNames[execution.status]) :
+        submitting.has(item.id) ? t('Submitting') : decision ? t(statusNames[decision.choice]) : t('Pending'));
+      if (index === current) {
+        button.setAttribute('aria-current', 'step');
+        if (scroll) {
+          const queue = $('queue');
+          const bottom = button.offsetTop + button.offsetHeight;
+          if (bottom > queue.scrollTop + queue.clientHeight) queue.scrollTop = bottom - queue.clientHeight;
+          if (button.offsetTop < queue.scrollTop) queue.scrollTop = button.offsetTop;
+        }
+      } else button.removeAttribute('aria-current');
+    }
+    if (source) renderQueueSummary();
+  }
+
+  function sourcePreviewFailure(fix) {
+    if (!previewFailures.has(fix.id)) {
+      let failure = '';
+      for (const id of Object.keys(fix.changesBySurface)) {
+        const result = renderCandidate(id, byId.get(fix.id), 'after', {cumulative:false});
+        if (result.applied.has(fix.id)) continue;
+        failure = surfaces.get(id).title + ' · ' + result.errors.join(' ');
+        break;
+      }
+      previewFailures.set(fix.id, failure);
+    }
+    return previewFailures.get(fix.id);
+  }
+
+  function approvalIssue(fix) {
+    if (jobs.get(fix.id)?.status === 'applied') return '';
+    if (['failed', 'interrupted', 'blocked'].includes(jobs.get(fix.id)?.status)) {
+      return fix.id + t(' needs a new source revision.');
+    }
+    if (!sourceReady.has(fix.id)) return fix.id + t(' has no source edit prepared.');
+    const failure = sourcePreviewFailure(fix);
+    if (failure) return failure;
+    for (const id of fix.requires) {
+      if (['skip', 'revise'].includes(decisions.get(id)?.choice)) {
+        return t('Prerequisite ') + id + t(' was skipped or returned for changes.');
+      }
+      const issue = approvalIssue(data.fixes[byId.get(id)]);
+      if (issue) return issue;
+    }
+    return '';
+  }
+
+  function batchCandidates() {
+    if (!connected) return [];
+    return data.fixes.filter(fix => sourceReady.has(fix.id) && !jobs.has(fix.id) && !submitting.has(fix.id) &&
+      !['skip', 'revise'].includes(decisions.get(fix.id)?.choice) && !approvalIssue(fix));
+  }
+
+  function renderQueueSummary() {
+    const counts = {};
+    for (const job of jobs.values()) counts[job.status] = (counts[job.status] ?? 0) + 1;
+    const labels = Object.keys(jobNames).filter(status => counts[status])
+      .map(status => counts[status] + ' ' + t(jobNames[status]).toLowerCase());
+    if (submitting.size) labels.push(submitting.size + t(' submitting'));
+    $('queue-summary').textContent = !connected ? t('Connecting to the source queue…') :
+      labels.join(' · ') || t('Ready to apply approved changes to source.');
+    const remaining = batchCandidates().length;
+    $('queue-all').querySelector('span').textContent = remaining ? t('Approve and queue all (') + remaining + ')' : t('Approve and queue all');
+    $('queue-all').disabled = !remaining;
+  }
+
+  function rememberJobs() {
+    for (const job of jobs.values()) {
+      decisions.set(job.id, {choice:'keep', note:job.note});
+    }
+  }
+
+  async function queueRequest(entries) {
+    const version = ++requestVersion;
+    const headers = {'X-Review-Token':source.token};
+    if (entries) headers['Content-Type'] = 'application/json';
+    const response = await fetch('/api/queue', entries ?
+      {method:'POST', headers, body:JSON.stringify(entries)} : {headers});
+    if (response.status === 403 || response.status === 404) throw new Error(t('Reload to reconnect to the local review server.'));
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error ?? t('The queue request failed.'));
+    if (version < latestResponse) return;
+    latestResponse = version;
+    const next = new Map(result.jobs.map(job => [job.id, job]));
+    if (connected && JSON.stringify([...jobs]) === JSON.stringify([...next])) return;
+    connected = true;
+    jobs = next;
+    rememberJobs();
+    persist();
+    render();
+  }
+
+  function submit(fixes) {
+    if (!fixes.length) return;
+    const entries = fixes.map(fix => ({id:fix.id, fingerprint:fix.fingerprint,
+      note:(decisions.get(fix.id)?.note ?? '').trim()}));
+    for (const fix of fixes) submitting.add(fix.id);
+    render();
+    commands = commands.then(async () => {
+      try {
+        await queueRequest(entries);
+        $('notice').textContent = fixes.length === 1 ? t('Approval sent · ') + fixes[0].id :
+          t('Approvals sent for ') + fixes.length + t(' corrections.');
+      } catch (error) {
+        $('notice').textContent = error.message;
+      } finally {
+        for (const fix of fixes) submitting.delete(fix.id);
+        render();
+      }
+    });
+  }
+
+  function exported() {
+    return {schema:1, reviewId:data.reviewId, decisions:data.fixes.flatMap(fix => {
+      const decision = decisions.get(fix.id);
+      return decision ? [{id:fix.id, revision:fix.revision, fingerprint:fix.fingerprint, ...decision}] : [];
+    })};
+  }
+
+  function persist() {
+    try { localStorage.setItem(storageKey, JSON.stringify(exported())); }
+    catch { /* Export is available when browser storage is disabled. */ }
+  }
+
+  function restore(payload) {
+    if (payload?.schema !== 1 || payload.reviewId !== data.reviewId || !Array.isArray(payload.decisions)) {
+      throw new Error(t('This export belongs to a different review or has an invalid format.'));
+    }
+    let imported = 0;
+    let ignored = 0;
+    for (const entry of payload.decisions) {
+      const fix = data.fixes[byId.get(entry?.id)];
+      if (!fix || fix.revision !== entry.revision || fix.fingerprint !== entry.fingerprint ||
+          !Object.hasOwn(statusNames, entry.choice) || typeof entry.note !== 'string' ||
+          (entry.choice === 'revise' && !entry.note.trim())) {
+        ignored++;
+        continue;
+      }
+      decisions.set(fix.id, {choice:entry.choice, note:entry.note});
+      imported++;
+    }
+    return {imported, ignored};
+  }
+
+  function save(choice, note) {
+    const fix = data.fixes[current];
+    if (!fix || $(choice).disabled) return;
+    if (choice === 'keep' && sourceReady.has(fix.id)) {
+      if (!approvalIssue(fix)) submit([fix]);
+      return;
+    }
+    decisions.set(fix.id, {choice, note:note ?? decisions.get(fix.id)?.note ?? ''});
+    persist();
+    if (choice !== 'keep') includeEarlier = false;
+    render();
+    $('notice').textContent = statusNames[choice] + ' · ' + fix.id + t(' · revision ') + fix.revision;
+  }
+
+  function positionChangePopover() {
+    const popover = $('change-popover');
+    if (!popover.matches(':popover-open')) return;
+    const anchor = $('revise').getBoundingClientRect();
+    const margin = 12;
+    const gap = 8;
+    const below = anchor.bottom + gap;
+    const above = anchor.top - popover.offsetHeight - gap;
+    const top = below + popover.offsetHeight <= innerHeight - margin || above < margin ? below : above;
+    popover.style.top = Math.max(margin, Math.min(top, innerHeight - popover.offsetHeight - margin)) + 'px';
+    popover.style.left = Math.max(margin, Math.min(anchor.right - popover.offsetWidth, innerWidth - popover.offsetWidth - margin)) + 'px';
+  }
+
+  function closeChangePopover() {
+    $('change-popover').hidePopover();
+    $('revise').focus({preventScroll:true});
+  }
+
+  function start() {
+    if (timer !== null) { stop(true); return; }
+    if (!paused || current >= data.fixes.length - 1) select(-1);
+    paused = false;
+    includeEarlier = true;
+    render();
+    timer = setInterval(() => {
+      if (current >= data.fixes.length - 1) { stop(); return; }
+      select(current + 1);
+      if (current === data.fixes.length - 1) stop();
+    }, 1500);
+    updatePlayback();
+  }
+
+  function openCoverage() {
+    $('coverage-dialog').showModal();
+  }
+
+  function localizeContext() {
+    $('title').textContent = data.title;
+    document.title = data.title + t(' · jdeslop review');
+    $('context').textContent = data.context + t(' · Visual snapshot');
+  }
+
+  function buildControls() {
+    localizeContext();
+    for (const item of data.surfaces) {
+      const option = element('option', item.title);
+      option.value = item.id;
+      $('surface').append(option);
+    }
+    $('surface-label').hidden = data.surfaces.length === 1;
+    $('source-actions').hidden = !source;
+    for (const [index, fix] of data.fixes.entries()) {
+      const button = element('button', '');
+      button.append(element('strong', fix.title), element('span', '', 'item-meta'));
+      button.onclick = () => {
+        stop();
+        if (!changesOn(fix, surface.id).length) changeSurface(Object.keys(fix.changesBySurface)[0]);
+        selectCorrection(index);
+      };
+      $('queue').append(button);
+    }
+    changeSurface(surface.id);
+  }
+
+  function changeSurface(id) {
+    $('change-popover').hidePopover();
+    surface = surfaces.get(id);
+    $('surface').value = id;
+    $('live').hidden = !surface.liveUrl;
+    if (surface.liveUrl) $('live').href = surface.liveUrl;
+    else $('live').removeAttribute('href');
+    renderCoverage();
+  }
+
+  function renderCoverage() {
+    $('coverage').querySelector('span').textContent = t('Coverage · ') + surface.checks.length;
+    $('coverage-title').textContent = t('Audit coverage · ') + surface.title;
+    $('checks').replaceChildren();
+    for (const check of surface.checks) {
+      const row = element('article', '', 'check');
+      row.append(element('h3', check.id + ' · ' + t(check.status)), element('p', check.evidence || t('Awaiting evidence.')));
+      if (check.gap) row.append(element('p', t('Evidence gap: ') + check.gap));
+      const actions = element('div', '', 'group');
+      for (const [index, fix] of data.fixes.entries()) {
+        if (!changesOn(fix, surface.id).length || !fix.checkIds.includes(check.id) || check.status !== 'finding') continue;
+        const button = element('button', fix.title);
+        button.onclick = () => {
+          $('coverage-dialog').close();
+          stop();
+          selectCorrection(index);
+          $('queue').children[index].focus({preventScroll:true});
+        };
+        actions.append(button);
+      }
+      if (check.status === 'finding' && !actions.children.length) actions.textContent = t('No visual correction staged.');
+      row.append(actions);
+      $('checks').append(row);
+    }
+  }
+
+  $('canvas').addEventListener('load', () => {
+    const frame = $('canvas');
+    if (!pendingFrame || frame.contentDocument?.documentElement?.dataset.reviewFrame !== pendingFrame.revision) return;
+    const saved = scrollPositions.get(pendingFrame.surfaceId);
+    if (saved) {
+      frame.contentWindow.scrollTo({left:saved.x, top:saved.y, behavior:'instant'});
+      for (const [id, left, top] of saved.containers) {
+        frame.contentDocument.getElementById(id)?.scrollTo({left, top, behavior:'instant'});
+      }
+    }
+    pendingFrame = null;
+  });
+  connectPreferences(() => {
+    $('notice').textContent = '';
+    previewFailures.clear();
+    updatePlayback();
+    localizeContext();
+    renderCoverage();
+    render();
+  });
+  buildControls();
+  try { restore(JSON.parse(localStorage.getItem(storageKey))); }
+  catch { /* A first-time review has no saved choices. */ }
+  render();
+  $('previous').onclick = () => { stop(); selectCorrection(current - 1); };
+  $('next').onclick = () => { stop(); selectCorrection(current + 1); };
+  $('play').onclick = start;
+  $('original').onclick = () => { stop(); mode = 'original'; render(); };
+  for (const view of ['before', 'after']) $(view).onclick = () => { stop(paused); select(current, view); };
+  $('include-earlier').onchange = () => {
+    stop(paused);
+    includeEarlier = $('include-earlier').checked;
+    render();
+  };
+  $('surface').onchange = () => { changeSurface($('surface').value); render(); };
+  $('width').onchange = () => {
+    const value = $('width').value;
+    $('canvas').style.width = value === 'fit' ? '100%' : value + 'px';
+  };
+  $('coverage').onclick = openCoverage;
+  if (source) {
+    const sync = () => queueRequest().catch(error => { $('notice').textContent = error.message; });
+    sync();
+    setInterval(sync, 900);
+    $('queue-all').onclick = () => { stop(); submit(batchCandidates()); };
+  }
+  function updateSendRequest() {
+    $('send-change').disabled = !$('note').value.trim();
+  }
+  $('note').oninput = updateSendRequest;
+  for (const choice of ['keep', 'skip']) $(choice).onclick = () => { stop(); save(choice); };
+  $('revise').onclick = () => {
+    if ($('change-popover').matches(':popover-open')) return;
+    stop();
+    $('note').value = decisions.get(data.fixes[current].id)?.note ?? '';
+    updateSendRequest();
+  };
+  $('change-popover').addEventListener('toggle', (event) => {
+    const open = event.newState === 'open';
+    $('revise').setAttribute('aria-expanded', String(open));
+    if (open) {
+      positionChangePopover();
+      $('note').focus({preventScroll:true});
+    }
+  });
+  window.addEventListener('resize', positionChangePopover);
+  window.addEventListener('scroll', positionChangePopover, {passive:true});
+  $('cancel-change').onclick = closeChangePopover;
+  $('change-form').onsubmit = (event) => {
+    event.preventDefault();
+    const note = $('note').value.trim();
+    if (!note || $('revise').disabled) return;
+    save('revise', note);
+    closeChangePopover();
+  };
+  $('clear').onclick = () => {
+    const fix = data.fixes[current];
+    decisions.delete(fix.id);
+    persist();
+    render();
+    $('notice').textContent = t('Decision cleared · ') + fix.id;
+  };
+  $('export').onclick = () => {
+    const blob = new Blob([JSON.stringify(exported(), null, 2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const link = element('a', '');
+    link.href = url;
+    link.download = data.reviewId + '-decisions.json';
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+  $('import').onclick = () => $('import-file').click();
+  $('import-file').onchange = async () => {
+    const [file] = $('import-file').files;
+    $('import-file').value = '';
+    if (!file) return;
+    try {
+      const {imported, ignored} = restore(JSON.parse(await file.text()));
+      stop();
+      rememberJobs();
+      persist();
+      render();
+      $('notice').textContent = t`Imported ${imported} decisions. Ignored ${ignored} stale or invalid decisions.`;
+    } catch (error) { $('notice').textContent = error.message; }
+  };
+</script>
+</html>

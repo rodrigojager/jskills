@@ -1,0 +1,1810 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>juice-it-up Lab</title>
+<script>
+const preferenceKey = 'jjuicer:appearance:';
+
+const defaults = {lang: '__DEFAULT_LANG__', theme: '__DEFAULT_THEME__'};
+const darkMode = matchMedia('(prefers-color-scheme: dark)');
+function getPreference(key) {
+  try { return localStorage.getItem(preferenceKey + key); } catch { return null; }
+}
+function savePreference(key, value) {
+  try { localStorage.setItem(preferenceKey + key, value); } catch { /* Storage may be disabled. */ }
+}
+const query = new URLSearchParams(location.search);
+let language = [query.get('lang'), getPreference('lang'), defaults.lang].find(value => typeof value === 'string' && /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(value)) ?? 'en';
+let theme = [query.get('theme'), getPreference('theme'), defaults.theme].find(value => ['light', 'dark', 'system'].includes(value)) ?? 'system';
+function applyTheme() {
+  const dark = theme === 'dark' || theme === 'system' && darkMode.matches;
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  document.getElementById('theme-switch')?.setAttribute('aria-checked', String(dark));
+}
+applyTheme();
+darkMode.addEventListener('change', applyTheme);
+document.documentElement.lang = language;
+</script>
+<style>
+:root {
+  color-scheme: light;
+  --ink:#1e2725; --muted:#52625e; --panel:#fbfcfb; --bg:#f2f5f3; --canvas:#e4ebe7;
+  --line:#d4ded9; --accent:#17634f; --selected:#dcefe7; --on-accent:#fff;
+  --warn:#804111; --warn-bg:#fff4e5; --bad:#a22622;
+}
+:root[data-theme="dark"] {
+    color-scheme:dark;
+    --ink:#e9eeeb; --muted:#a8b7af; --panel:#19211e; --bg:#121915; --canvas:#0e1511;
+    --line:#33443c; --accent:#99dac0; --selected:#253f34; --on-accent:#132820;
+    --warn:#ffd399; --warn-bg:#38291d; --bad:#ffaba5;
+}
+* { box-sizing:border-box; }
+[hidden] { display:none !important; }
+body { margin:0; height:100vh; height:100dvh; display:grid; grid-template-rows:auto minmax(0,1fr); background:var(--bg); color:var(--ink); font:14px/1.4 system-ui,sans-serif; }
+button,select,input,textarea { font:inherit; color:inherit; }
+button,select { cursor:pointer; border:1px solid var(--line); border-radius:7px; background:var(--panel); min-height:34px; padding:5px 10px; }
+button:hover:not(:disabled), select:hover:not(:disabled) { border-color:var(--accent); }
+button:disabled,select:disabled { opacity:.55; cursor:default; }
+button[aria-pressed="true"], button[aria-expanded="true"] { background:var(--selected); color:var(--accent); border-color:var(--accent); }
+:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+a { color:var(--accent); }
+.batch-approval { display:inline-flex; align-items:center; min-height:34px; padding:5px 10px; border:1px solid var(--accent); border-radius:7px; text-decoration:none; white-space:nowrap; }
+.batch-approval:hover { background:var(--selected); }
+h1,h2,h3,p { margin:0; overflow-wrap:anywhere; }
+header { padding:12px 18px; background:var(--panel); border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; gap:12px 20px; flex-wrap:wrap; }
+.brand { min-width:0; display:flex; align-items:center; gap:10px; }
+.brand span { font-weight:700; border-right:1px solid var(--line); padding-right:10px; white-space:nowrap; }
+h1 { font-size:14px; font-weight:560; }
+.header-actions,.toolbar,.cluster { display:flex; align-items:center; gap:6px; min-width:0; }
+.header-actions { flex-wrap:wrap; }
+.workspace { min-height:0; position:relative; display:grid; grid-template-columns:auto minmax(0,1fr); }
+#nav { width:246px; display:flex; flex-direction:column; min-height:0; padding:14px 12px; background:var(--panel); border-right:1px solid var(--line); }
+#nav h2 { font-size:15px; }
+#nav-head { display:grid; gap:8px; padding:0 3px 9px; }
+#filter,textarea,.motion-field input,.motion-field select { width:100%; min-width:0; border:1px solid var(--line); border-radius:7px; background:var(--bg); padding:7px 9px; }
+#queue { overflow:auto; padding:3px; display:flex; flex-direction:column; gap:3px; }
+.queue-item { flex:none; width:100%; display:grid; gap:4px; text-align:left; border-color:transparent; padding:8px; overflow-wrap:anywhere; }
+.queue-item[aria-current="true"] { background:var(--selected); border-color:var(--accent); }
+.queue-item > strong { font-size:13px; font-weight:650; }
+.note,small { color:var(--muted); font-size:12px; }
+.section-label { margin:10px 4px 2px; font-size:12px; }
+main { grid-column:2; display:grid; min-height:0; min-width:0; grid-template-rows:auto minmax(0,1fr) auto; }
+.review-bar { padding:10px 16px; display:grid; gap:9px; background:var(--panel); border-bottom:1px solid var(--line); }
+.context { display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; }
+.context h2 { font-size:17px; line-height:1.2; }
+.context .cluster button { width:34px; padding:3px; font-size:17px; }
+#item-context { margin-top:2px; }
+#step-count { min-width:max-content; padding:0 3px; }
+.versions { overflow-x:auto; padding:3px; margin:-3px; display:flex; align-items:center; gap:5px; }
+.versions button { white-space:nowrap; min-height:32px; }
+.versions button[aria-pressed="true"] { font-weight:650; }
+.versions small { margin-left:5px; }
+.versions button[aria-pressed="true"] small { color:inherit; }
+.notice { background:var(--warn-bg); color:var(--warn); border-radius:6px; padding:6px 9px; font-size:12px; }
+#stage { display:grid; grid-template-rows:auto minmax(0,1fr); min-height:0; background:var(--canvas); }
+#preview-warnings { display:grid; gap:4px; margin:8px 12px 0; }
+#preview-warnings:empty { display:none; }
+#motion-banner { margin:8px 12px 0; display:flex; align-items:center; gap:8px; justify-content:space-between; }
+#motion-banner button { min-height:26px; padding:2px 8px; }
+.motion-outline {
+  position:absolute; z-index:1; pointer-events:none;
+  background:color-mix(in srgb,var(--accent) 46%,transparent);
+  box-shadow:inset 0 0 0 3px var(--accent),inset 0 0 0 4px var(--on-accent);
+}
+.motion-outline[data-candidate] {
+  background:color-mix(in srgb,var(--accent) 25%,transparent);
+  outline:2px dashed var(--accent); outline-offset:-2px;
+  box-shadow:inset 0 0 0 3px var(--on-accent);
+}
+.motion-matches { position:absolute; inset:0; pointer-events:none; }
+.motion-matches .motion-outline {
+  background:color-mix(in srgb,var(--accent) 32%,transparent);
+  box-shadow:inset 0 0 0 2px var(--accent),inset 0 0 0 3px var(--on-accent);
+}
+.motion-matches > .motion-outline[data-page] {
+  inset:0; background:transparent;
+  box-shadow:inset 0 0 0 3px var(--accent),inset 0 0 0 4px var(--on-accent);
+}
+#frame-wrap { grid-row:2; overflow:auto; min-height:0; padding:13px; }
+#frame-box { position:relative; width:max-content; margin:0 auto; }
+#frame-box iframe { color-scheme:normal; position:absolute; inset:0 auto auto 0; display:block; border:0; transform-origin:top left; background:#fff; box-shadow:0 0 0 1px #0002,0 3px 18px #0002; }
+.empty { margin:clamp(22px,10vh,100px) auto 20px; max-width:42ch; text-align:center; color:var(--muted); padding:10px; }
+.empty p { margin:7px 0; }
+.toolbar { flex-wrap:wrap; justify-content:space-between; background:var(--panel); border-top:1px solid var(--line); padding:7px 13px; }
+.toolbar button,.toolbar select { font-size:12px; min-height:32px; }
+.toolbar label { display:flex; align-items:center; gap:5px; }
+#viewports { max-width:130px; }
+#preview-info { margin-right:auto; }
+aside { position:absolute; z-index:2; right:0; top:0; bottom:0; width:min(360px,100%); overflow:auto; background:var(--panel); border-left:1px solid var(--line); box-shadow:-10px 0 28px #0002; padding:15px; }
+.drawer-top { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:13px; }
+.drawer-top h2 { font-size:18px; }
+.drawer-content { display:grid; gap:11px; }
+.drawer-content h3 { font-size:15px; }
+.drawer-content textarea { min-height:90px; resize:vertical; }
+.actions { display:flex; flex-wrap:wrap; gap:6px; }
+.actions .primary { background:var(--accent); color:var(--on-accent); border-color:var(--accent); }
+.ref { font:12px ui-monospace,Consolas,monospace; overflow-wrap:anywhere; color:var(--muted); }
+.record { border:1px solid var(--line); border-radius:8px; padding:8px; overflow-wrap:anywhere; }
+.status:not(:empty) { font-size:12px; }
+.status.ok { color:var(--accent); } .status.bad { color:var(--bad); }
+#checks-list { display:grid; gap:6px; }
+.check { display:grid; gap:3px; }
+.check-head { display:flex; align-items:baseline; justify-content:space-between; gap:8px; }
+.check strong { font-size:13px; }
+.check .check-status { font-size:11px; color:var(--muted); white-space:nowrap; }
+.check[data-status="pass"] .check-status { color:var(--accent); }
+.check[data-status="issue"] .check-status { color:var(--bad); }
+.motion-settings,.motion-context { display:grid; gap:12px; min-width:0; }
+.motion-context { padding:12px; background:var(--bg); }
+.motion-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.motion-heading h3 { min-width:0; }
+.motion-icon { display:grid; place-items:center; flex:none; width:34px; padding:0; }
+#motion { display:inline-flex; align-items:center; gap:8px; }
+.picker-icon { position:relative; display:block; width:15px; height:15px; border:1.5px solid currentColor; border-radius:3px; }
+.picker-icon::before,.picker-icon::after { content:''; position:absolute; inset:50% auto auto 50%; transform:translate(-50%,-50%); background:currentColor; }
+.picker-icon::before { width:20px; height:1.5px; }
+.picker-icon::after { width:1.5px; height:20px; }
+.library-icon { width:16px; height:15px; border:1.5px solid currentColor; border-radius:2px; box-shadow:4px -3px 0 -1px var(--panel),5px -4px 0 -1px currentColor; }
+.library-icon::after { content:''; display:block; width:7px; height:4px; margin:3px; border-block:1px solid currentColor; }
+.motion-selector { display:flex; align-items:center; gap:5px; min-height:36px; min-width:0; padding:3px; border:1px solid var(--line); border-radius:7px; background:var(--panel); cursor:text; }
+.motion-crumbs { display:flex; align-items:center; gap:3px; min-width:0; overflow-x:auto; padding:2px; }
+.motion-crumbs button { flex:none; min-height:25px; max-width:155px; padding:2px 6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:11px ui-monospace,Consolas,monospace; }
+.motion-crumbs [aria-current] { background:var(--selected); border-color:var(--accent); color:var(--accent); }
+.selector-tools { display:flex; flex:none; gap:4px; margin-left:auto; }
+.selector-tools button { min-height:28px; font-size:12px; padding:3px 6px; white-space:nowrap; }
+.motion-context .status:empty { display:none; }
+.motion-field { display:grid; gap:3px; font-size:12px; font-weight:600; }
+.motion-options { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+.motion-settings .motion-field textarea { min-height:68px; font-weight:400; }
+.motion-effect { display:grid; gap:5px; padding:10px 12px; background:var(--bg); }
+.motion-effect .actions { white-space:nowrap; }
+.effect-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+.effect-grid > .note { grid-column:1/-1; }
+.effect-card { display:grid; align-content:start; min-width:0; padding:0; text-align:left; }
+.effect-copy { display:grid; gap:4px; padding:8px 9px 9px; overflow-wrap:anywhere; line-height:1.3; }
+.effect-copy strong { font-size:13px; font-weight:650; }
+.motion-thumb {
+  position:relative; display:grid; place-items:center; height:74px; border-radius:6px 6px 0 0;
+  border-bottom:1px solid var(--line); overflow:hidden;
+  background:radial-gradient(circle at 50% 45%,var(--canvas),var(--bg) 80%);
+}
+.effect-demo {
+  display:flex; align-items:center; justify-content:center; gap:5px;
+  border:1px solid var(--line); border-radius:5px; background:var(--panel);
+  color:var(--ink); font:600 10px/1.2 system-ui,sans-serif;
+}
+.effect-demo svg { width:14px; height:14px; flex:none; fill:none; stroke:currentColor; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round; }
+.effect-demo[data-kind="press"] { padding:6px 13px; border-color:var(--accent); background:var(--accent); color:var(--on-accent); }
+.effect-demo[data-kind="reaction"] { width:29px; height:29px; border-radius:50%; color:var(--accent); background:var(--selected); }
+.effect-demo[data-kind="reaction"] svg { fill:currentColor; }
+.effect-demo[data-kind="success"] { padding:5px 8px; border-radius:20px; color:var(--accent); background:var(--selected); }
+.effect-demo[data-kind="status"] { padding:5px 8px; }
+.effect-demo[data-kind="status"]::before { content:''; width:5px; height:5px; border-radius:50%; background:var(--accent); }
+.effect-demo[data-kind="error"] { justify-content:space-between; width:84px; padding:5px 6px; border-color:var(--bad); color:var(--bad); }
+.effect-demo[data-kind="error"] svg { width:11px; height:11px; }
+.effect-demo[data-kind="row"] { gap:6px; padding:5px 8px; }
+.effect-demo[data-kind="row"] svg { width:11px; height:11px; color:var(--accent); }
+.effect-demo[data-kind="detail"] { flex-direction:column; align-items:start; gap:3px; width:76px; padding:5px 7px; }
+.effect-demo[data-kind="detail"]::after { content:''; width:75%; height:3px; border-radius:2px; background:var(--line); }
+.effect-demo[data-kind="popover"],.effect-demo[data-kind="dialog"] { box-shadow:0 3px 7px #0003; }
+.effect-demo[data-kind="popover"] { flex-direction:column; align-items:start; gap:1px; padding:3px; transform-origin:10px top; }
+.effect-demo[data-kind="popover"] span { width:100%; padding:2px 5px; border-radius:3px; }
+.effect-demo[data-kind="popover"] span:first-child { background:var(--selected); }
+.effect-anchor { display:grid; place-items:center; justify-items:start; gap:3px; }
+.effect-anchor > span:first-child { border:1px solid var(--line); border-radius:4px; padding:0 4px; font:650 11px/12px system-ui,sans-serif; background:var(--panel); }
+.effect-dialog-stage { display:grid; place-items:center; width:108px; height:55px; border:1px solid var(--line); border-radius:6px; background:color-mix(in srgb,var(--ink) 14%,var(--bg)); }
+.effect-demo[data-kind="dialog"] { flex-direction:column; gap:3px; padding:4px 9px; }
+.effect-demo[data-kind="dialog"] span { padding:1px 5px; border-radius:3px; background:var(--selected); color:var(--accent); }
+.effect-tabs { position:relative; display:flex; align-items:center; gap:9px; padding:4px 3px 6px; border-bottom:1px solid var(--line); color:var(--muted); font:600 10px system-ui,sans-serif; }
+.effect-tabs > span:nth-child(2) { color:var(--accent); }
+.effect-demo[data-kind="indicator"] { position:absolute; left:38px; bottom:-1px; width:24px; height:2px; border:0; background:var(--accent); }
+.effect-demo[data-kind="particles"] { width:23px; height:23px; border-radius:7px; color:var(--accent); background:var(--selected); }
+.effect-demo[data-kind="direction"] { padding:5px 8px; color:var(--accent); }
+.effect-demo[data-kind="direction"] svg,.effect-demo[data-kind="disclosure"] svg { width:12px; height:12px; }
+.effect-demo[data-kind="disclosure"] { justify-content:space-between; min-width:72px; padding:5px 7px; }
+.effect-demo[data-kind="disclosure"] svg { color:var(--accent); }
+.effect-demo[data-kind="reveal"] { flex-direction:column; align-items:start; padding:6px 9px; gap:4px; }
+.effect-demo[data-kind="reveal"] small { font:500 8px/1.2 system-ui,sans-serif; color:var(--muted); }
+.effect-demo[data-kind="field"] { padding:5px 8px; min-width:73px; justify-content:start; color:var(--accent); outline:1px solid currentColor; outline-offset:2px; }
+.effect-demo[data-kind="ripple"] { padding:6px 13px; border-color:var(--accent); color:var(--accent); background:var(--selected); }
+.effect-demo[data-kind="reference"] { padding:5px 7px; color:var(--muted); }
+.motion-settings .actions { position:sticky; bottom:0; padding:6px 0; background:var(--panel); }
+.motion-suggestions { display:grid; gap:6px; }
+.motion-suggestions article { display:grid; gap:4px; }
+.motion-history { padding:7px 9px; }
+.motion-history summary { cursor:pointer; color:var(--accent); font-size:12px; font-weight:650; }
+.motion-history[open] summary { margin-bottom:7px; }
+#effect-library { display:grid; grid-template-rows:auto minmax(0,1fr) auto; overflow:hidden; padding:0; }
+#effect-library .drawer-top { margin:0; padding:10px 12px; border-bottom:1px solid var(--line); }
+.library-body { min-height:0; overflow:auto; overscroll-behavior:contain; padding:8px 10px; }
+.library-filters { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; margin-bottom:8px; }
+.library-filter { display:grid; gap:3px; min-width:0; }
+.library-filter label { color:var(--muted); font-size:12px; }
+.library-filter select { width:100%; min-width:0; padding:4px; }
+#library-history:not(:empty) { margin-top:8px; }
+#library-history .status:empty,#library-inspector :is(.status,.actions):empty { display:none; }
+#library-inspector:not([hidden]) { display:grid; gap:6px; padding:8px 12px 10px; border-top:1px solid var(--line); }
+#library-inspector button { padding-inline:7px; font-size:12px; }
+.library-action { display:inline-flex; align-items:center; justify-content:center; gap:5px; white-space:nowrap; }
+.library-action svg { width:14px; height:14px; flex:none; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+@media (min-width:961px) {
+  .workspace:has(> :is(#effect-library,#aside[data-drawer="motion"]):not([hidden])) { grid-template-columns:auto minmax(0,1fr) clamp(344px,28vw,400px); }
+  #effect-library,#aside[data-drawer="motion"] { grid-column:3; position:static; width:auto; min-width:0; min-height:0; box-shadow:none; }
+}
+@media (max-width:960px) {
+  .workspace:has(> :is(#effect-library,#aside[data-drawer="motion"]):not([hidden])) { grid-template-rows:minmax(0,1fr) min(46%,350px); }
+  #nav,main { grid-row:1; }
+  #effect-library,#aside[data-drawer="motion"] { grid-column:1/-1; grid-row:2; position:relative; width:auto; min-height:0; border-left:0; border-top:1px solid var(--line); box-shadow:none; }
+  #effect-library .drawer-top { padding-block:5px; }
+  #library-inspector:not([hidden]) { padding-block:5px; }
+}
+@media (max-width:820px) {
+  header { padding:8px 10px; gap:6px 12px; }
+  .header-actions button { min-height:30px; font-size:12px; padding:4px 7px; }
+  #nav { position:absolute; left:0; inset-block:0; z-index:1; width:min(290px,100%); box-shadow:10px 0 28px #0002; }
+  main { grid-column:1/-1; }
+  .review-bar { padding:8px 10px; }
+  #frame-wrap { padding:8px; }
+  .toolbar { padding:6px 9px; }
+  #preview-info { display:none; }
+}
+@media (max-width:480px) {
+  .workspace:has(> :is(#effect-library,#aside[data-drawer="motion"]):not([hidden])) { grid-template-rows:minmax(0,1fr) 38%; }
+  .header-actions { gap:4px; }
+  #motion .library-icon { display:none; }
+  #effect-library .drawer-top button { padding-inline:7px; font-size:12px; }
+  .motion-thumb { height:64px; }
+}
+
+  .appearance { display:inline-flex; align-items:center; gap:6px; margin-inline-start:auto; white-space:nowrap }
+  .appearance button,.appearance select { min-height:34px; padding:4px 7px }
+  .appearance button { min-width:34px; display:inline-grid; place-items:center }
+  .appearance svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round }
+  .appearance .theme-moon, :root[data-theme="dark"] .appearance .theme-sun { display:none }
+  :root[data-theme="dark"] .appearance .theme-moon { display:block }
+</style>
+</head>
+<body>
+<svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" hidden>
+  <symbol id="library-icon-configure" viewBox="0 0 16 16"><path d="M2 4h12M2 8h12M2 12h12M5 2v4m6 0v4m-5 0v4"/></symbol>
+  <symbol id="library-icon-preview" viewBox="0 0 16 16"><path d="m5 3 8 5-8 5z"/></symbol>
+  <symbol id="library-icon-target" viewBox="0 0 16 16"><circle cx="8" cy="8" r="4.5"/><path d="M8 1v4m0 6v4M1 8h4m6 0h4"/></symbol>
+  <symbol id="library-icon-clear" viewBox="0 0 16 16"><path d="m6 13-3.5-3.5a1 1 0 0 1 0-1.4l5.6-5.6a1 1 0 0 1 1.4 0l4 4a1 1 0 0 1 0 1.4L8.4 13H6Zm-.8-7.6 5.4 5.4M8.4 13H14"/></symbol>
+  <symbol id="library-icon-close" viewBox="0 0 16 16"><path d="m4 4 8 8m0-8-8 8"/></symbol>
+  <symbol id="library-icon-like" viewBox="0 0 16 16"><path d="M2 7h2v7H2zM6 7l2.6-4.5c.5-.9 1.8-.5 1.7.5L10 6h2.8c.8 0 1.4.7 1.2 1.5l-1.1 5.1c-.2.8-.7 1.4-1.6 1.4H6z"/></symbol>
+  <symbol id="library-icon-heart" viewBox="0 0 16 16"><path d="M8 13.4 2.8 8.3a3.1 3.1 0 0 1 4.4-4.4l.8.8.8-.8a3.1 3.1 0 0 1 4.4 4.4z"/></symbol>
+  <symbol id="library-icon-check" viewBox="0 0 16 16"><path d="m3.5 8 3 3L13 5"/></symbol>
+  <symbol id="library-icon-warning" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M8 5v3.5m0 2.4v.1"/></symbol>
+  <symbol id="library-icon-file" viewBox="0 0 16 16"><path d="M4 2h5l3 3v9H4zM9 2v4h3"/></symbol>
+  <symbol id="library-icon-arrow" viewBox="0 0 16 16"><path d="M2.5 8h10m-4-4 4 4-4 4"/></symbol>
+  <symbol id="library-icon-chevron" viewBox="0 0 16 16"><path d="m4 6 4 4 4-4"/></symbol>
+  <symbol id="library-icon-search" viewBox="0 0 16 16"><circle cx="6.8" cy="6.8" r="3.8"/><path d="m9.5 9.5 3.5 3.5"/></symbol>
+  <symbol id="library-icon-spark" viewBox="0 0 16 16"><path d="M8 2c.5 4 2 5.5 6 6-4 .5-5.5 2-6 6-.5-4-2-5.5-6-6 4-.5 5.5-2 6-6Z"/></symbol>
+  <symbol id="library-icon-reference" viewBox="0 0 16 16"><path d="M12 7V3H8m4 0L7 8m4 1v4H3V5h4"/></symbol>
+</svg>
+<header>
+  <div class="brand"><span id="workflow-label">jjuicer Lab</span><h1 id="title"></h1></div>
+  <div class="header-actions">
+    <button id="toggle-queue" aria-controls="nav" aria-expanded="false">Queue</button>
+    <div class="cluster" role="group" aria-label="Motion tools">
+      <button id="motion" type="button" aria-controls="effect-library" aria-expanded="false">
+        <span class="library-icon" aria-hidden="true"></span>Effect library
+      </button>
+      <button id="motion-pick" class="motion-icon" type="button" aria-label="Pick an element" title="Pick an element on the canvas" aria-controls="aside" aria-pressed="false" disabled>
+        <span class="picker-icon" aria-hidden="true"></span>
+      </button>
+    </div>
+    <button id="checks" aria-controls="aside" aria-expanded="false">Checks</button>
+    <button id="review" aria-controls="aside" aria-expanded="false">Review</button>
+    <a id="batch-approval" class="batch-approval" target="_blank" rel="noopener noreferrer" hidden>Approve all…</a>
+    <button id="refresh" type="button" title="Reload the latest checks, suggestions and feedback">Refresh</button>
+  <div class="appearance">
+    <button id="theme-switch" type="button" role="switch" aria-checked="false" aria-label="Dark theme" title="Dark theme">
+      <svg class="theme-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg>
+      <svg class="theme-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.8 14A9 9 0 0 1 10 3.2 9 9 0 1 0 20.8 14Z"/></svg>
+    </button>
+    <select id="language-switch" aria-label="Language" title="Language">
+      <option value="en" lang="en">EN</option>
+      <option value="pt-BR" lang="pt-BR">PT</option>
+    </select>
+  </div>
+
+  </div>
+</header>
+<div class="workspace" id="workspace">
+  <nav id="nav" aria-label="Suggestions" hidden>
+    <div id="nav-head"><h2>Suggestions</h2><p class="note" id="queue-summary"></p>
+      <input id="filter" type="search" placeholder="Find a suggestion" aria-label="Find a suggestion"></div>
+    <div id="queue"></div>
+  </nav>
+  <main>
+    <section class="review-bar" aria-label="Current suggestion">
+      <div class="context">
+        <div><h2 id="item-title">Loading run…</h2><p class="note" id="item-context"></p></div>
+        <div class="cluster">
+          <button id="prev" type="button" aria-label="Previous suggestion" title="Previous suggestion">‹</button>
+          <span id="step-count" class="note" role="status"></span>
+          <button id="next" type="button" aria-label="Next suggestion" title="Next suggestion">›</button>
+        </div>
+      </div>
+      <div class="versions" id="picker" role="group" aria-label="Versions" hidden></div>
+    </section>
+    <section id="stage" aria-label="Preview canvas">
+      <div>
+        <div id="preview-warnings"></div>
+        <div id="motion-banner" class="notice" hidden><span id="motion-message" role="status"></span>
+          <button id="motion-cancel" type="button" hidden>Cancel selection</button></div>
+      </div>
+      <div id="frame-wrap">
+        <div class="empty" id="empty">Loading preview…</div>
+        <div id="frame-box" hidden></div>
+      </div>
+    </section>
+    <div class="toolbar" aria-label="Preview controls">
+      <div class="cluster">
+        <select id="viewports" aria-label="Viewport"></select>
+        <button id="fit" type="button" aria-pressed="true" title="Toggle preview scaling">Fit</button>
+        <span id="preview-info" class="note"></span>
+      </div>
+      <div class="cluster">
+        <button id="replay" type="button" title="Reload preview and replay animation (R)">Replay</button>
+        <button id="pause" type="button" aria-pressed="false">Pause</button>
+        <select id="speeds" aria-label="Playback speed"></select>
+        <button id="rm" type="button" aria-pressed="false" title="Toggle the mock's reduced-motion mode">Reduced motion</button>
+      </div>
+      <p id="playback-status" class="note" role="status" hidden></p>
+    </div>
+  </main>
+  <aside id="aside" aria-labelledby="drawer-title" hidden>
+    <div class="drawer-top"><h2 id="drawer-title"></h2>
+      <button id="close-drawer" type="button">Close</button>
+    </div>
+    <div id="drawer-content" class="drawer-content"></div>
+  </aside>
+  <aside id="effect-library" aria-labelledby="library-title" hidden>
+    <div class="drawer-top"><h2 id="library-title" tabindex="-1">Effect library</h2>
+      <div class="cluster">
+        <button id="library-clear" type="button" class="library-action" hidden><svg aria-hidden="true"><use href="#library-icon-clear"/></svg>Clear selection</button>
+        <button id="library-back" type="button" class="library-action"><svg aria-hidden="true"><use href="#library-icon-close"/></svg>Close</button>
+      </div>
+    </div>
+    <div class="library-body">
+      <div id="library-filters" class="library-filters"></div>
+      <div id="library-cards" class="effect-grid"></div>
+      <div id="library-history"></div>
+    </div>
+    <div id="library-inspector" hidden></div>
+  </aside>
+</div>
+
+<script type="module">
+import {
+  effectSettings, elementsForRecipe, findRecipe, isLocalMock, motionReferences, particlePresets, particleSettings, particleShapes,
+  particleTrajectories, playMotion, recipeMatchesElement, recipes, recipesForElement, triggers, validateMotion,
+} from '/assets/motion-library.mjs';
+import { locales } from '/assets/lab-locale.mjs';
+
+function t(message, ...values) {
+  if (message == null) return '';
+  const key = typeof message === 'string' ? message : message.map((part, index) => (index ? '{' + (index - 1) + '}' : '') + part).join('');
+  const messages = locales[language]?.messages ?? locales.en.messages;
+  const format = Object.hasOwn(messages, key) ? messages[key] : key;
+  return values.length ? format.replace(/\{(\d+)\}/g, (_, index) => values[index]) : format;
+}
+function connectPreferences(onLanguageChange, onThemeChange) {
+  if (!Object.hasOwn(locales, language)) language = Object.hasOwn(locales, defaults.lang) ? defaults.lang : 'en';
+  document.documentElement.lang = language;
+  const chrome = [];
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const source = node.textContent;
+    if (!node.parentElement.closest('script, style') && Object.hasOwn(locales.en.messages, source.trim())) {
+      chrome.push(() => { node.textContent = source.replace(source.trim(), () => t(source.trim())); });
+    }
+  }
+  for (const node of document.querySelectorAll('[aria-label], [placeholder], [title]')) {
+    for (const name of ['aria-label', 'placeholder', 'title']) {
+      const source = node.getAttribute(name);
+      if (Object.hasOwn(locales.en.messages, source)) chrome.push(() => node.setAttribute(name, t(source)));
+    }
+  }
+  const themeSwitch = document.getElementById('theme-switch');
+  const languageSwitch = document.getElementById('language-switch');
+  function remember(key, value) {
+    savePreference(key, value);
+    const url = new URL(location.href);
+    url.searchParams.delete(key);
+    try { history.replaceState(null, '', url); } catch { /* A portable file may restrict history. */ }
+  }
+  themeSwitch.onclick = () => {
+    theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+    remember('theme', theme);
+    applyTheme();
+    onThemeChange();
+  };
+  languageSwitch.replaceChildren(...Object.entries(locales).map(([code, locale]) => {
+    const option = new Option(locale.label, code);
+    option.lang = code;
+    return option;
+  }));
+  languageSwitch.value = language;
+  applyTheme();
+  chrome.forEach(update => update());
+  languageSwitch.onchange = () => {
+    language = languageSwitch.value;
+    remember('lang', language);
+    document.documentElement.lang = language;
+    chrome.forEach(update => update());
+    onLanguageChange();
+  };
+}
+
+
+(() => {
+  const VIEWPORTS = [
+    { id: 'desktop', label: 'Desktop', w: 1440, h: 900 },
+    { id: 'laptop', label: 'Laptop', w: 1280, h: 800 },
+    { id: 'tablet', label: 'Tablet', w: 834, h: 1112 },
+    { id: 'mobile', label: 'Mobile', w: 390, h: 844 },
+  ];
+  const SPEEDS = [1, 0.5, 0.25, 0.1];
+  const STATUSES = {
+    pass: 'Pass', issue: 'Issue', pending: 'Pending', skipped: 'Skipped', blocked: 'Blocked',
+    recorded: 'Report available',
+  };
+  const qs = new URLSearchParams(location.search);
+  const compact = matchMedia('(max-width: 820px)');
+  const ui = {
+    viewport: VIEWPORTS.find((v) => v.id === qs.get('vp'))?.id ?? 'desktop',
+    fit: qs.get('fit') !== '0',
+    speed: SPEEDS.includes(Number(qs.get('speed'))) ? Number(qs.get('speed')) : 1,
+    paused: false,
+    reduced: qs.get('rm') === '1',
+    opp: qs.get('o'), entry: qs.get('e'),
+    queue: !compact.matches,
+    drawer: null,
+  };
+  const $ = (id) => document.getElementById(id);
+  const el = (tag, attrs = {}, ...kids) => {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(attrs)) {
+      if (key === 'text') node.textContent = value;
+      else if (key.startsWith('on')) node.addEventListener(key.slice(2), value);
+      else if (value !== false && value != null) node.setAttribute(key, value === true ? '' : value);
+    }
+    node.append(...kids);
+    return node;
+  };
+
+  let state, groups = [], group, current, activeFrame, speedTimer;
+  const remembered = new Map();
+  const drafts = new Map();
+  const feedback = new Map();
+  const motionDefaults = {
+    recipe: null, selector: '', duration: null, trigger: 'click', triggerChosen: false,
+    preset: undefined, reference: 'reaction-burst', note: '', variationOf: undefined,
+  };
+  const motionDraft = { ...motionDefaults, options: {} };
+  const library = { recipe: null, kind: 'any', trigger: 'any' };
+  const selectedOutline = { element: el('div', { class: 'motion-outline', hidden: true, 'aria-hidden': 'true' }) };
+  const candidateOutline = {
+    element: el('div', { class: 'motion-outline', 'data-candidate': true, hidden: true, 'aria-hidden': 'true' }),
+  };
+  const motionMatches = el('div', { class: 'motion-matches', 'aria-hidden': 'true' });
+  let motionAnimation, sampleAnimation, stopPicking, pickingRecipe, pickingOrigin, libraryHighlights;
+
+  function persist() {
+    const url = new URL(location);
+    const set = (key, value, fallback) => value == null || value === fallback ? url.searchParams.delete(key) : url.searchParams.set(key, value);
+    set('vp', ui.viewport, 'desktop');
+    set('fit', ui.fit ? null : '0');
+    set('speed', String(ui.speed), '1');
+    set('rm', ui.reduced ? '1' : null);
+    set('o', ui.opp);
+    set('e', ui.entry);
+    history.replaceState(null, '', url);
+  }
+
+  function reviewGroups() {
+    const items = state.opportunities.map((opportunity) => ({
+      id: opportunity.id,
+      title: opportunity.title,
+      meta: [opportunity.surface, opportunity.location, opportunity.state !== 'open' && t(opportunity.state)].filter(Boolean).join(' · '),
+      surface: opportunity.surface,
+      entries: opportunity.variants.flatMap((variant) => variant.revisions.map((revision) => ({
+        key: opportunity.id + '/' + variant.id + '/r' + revision.rev,
+        label: variant.id === 'V0' ? 'Original' : variant.name,
+        revision, variant, preview: revision.preview,
+      }))),
+    }));
+    for (const composition of state.run.compositions ?? []) {
+      items.push({
+        id: composition.id, title: 'Composition ' + composition.id, meta: composition.refs.join(' + '), composition,
+        entries: [{ key: composition.id, label: composition.id, preview: composition }],
+      });
+    }
+    return items;
+  }
+
+  function entryLabel(entry) {
+    return entry.variant?.id === 'V0' ? t('Original') : entry.label;
+  }
+
+  function groupTitle(item) {
+    return item.composition ? t('Composition ') + item.id : item.title;
+  }
+
+  function srcOf(preview) {
+    if (/^https?:\/\//.test(preview.path)) return preview.path;
+    const entry = preview.entry || 'index.html';
+    const url = new URL('/run/' + preview.path.replace(/\\/g, '/').replace(/\/$/, '') + '/' + entry, location.origin);
+    if (ui.reduced) url.searchParams.set('jiu-rm', '1');
+    return url.href;
+  }
+
+  function renderControls() {
+    $('title').textContent = state.run.title || state.run.id;
+    $('title').title = state.run.id;
+    const workflow = { full: t('Full review'), motion: t('Add microinteractions'), seasonal: t('Seasonal only') }[state.run.workflow];
+    $('workflow-label').textContent = workflow ? 'jjuicer Lab · ' + workflow : 'jjuicer Lab';
+    $('batch-approval').hidden = !state.approvalUrl;
+    if (state.approvalUrl) {
+      const approval = new URL(state.approvalUrl);
+      approval.searchParams.set('lang', language);
+      approval.searchParams.set('theme', document.documentElement.dataset.theme);
+      $('batch-approval').href = approval;
+    }
+    const ready = state.opportunities.filter((opp) => opp.variants.some((v) => v.id !== 'V0' && v.revisions.some((r) => r.preview))).length;
+    $('queue-summary').textContent = ready + t(' of ') + state.opportunities.length + t(' with an alternative preview');
+    $('review').disabled = !current;
+    const checks = state.diagnostics?.checks ?? state.diagnostics?.reports ?? [];
+    $('checks').textContent = checks.length ? t('Checks · ') + checks.length : t('Checks');
+  }
+
+  function renderQueue() {
+    $('nav').hidden = !ui.queue;
+    $('toggle-queue').setAttribute('aria-expanded', String(ui.queue));
+    const filter = $('filter').value.trim().toLowerCase();
+    const matching = groups.filter((item) => [item.id, groupTitle(item), item.meta].join(' ').toLowerCase().includes(filter));
+    const list = $('queue');
+    const scroll = list.scrollTop;
+    const buttons = [];
+    for (const item of matching) {
+      if (item.composition && !buttons.some((node) => node.className === 'section-label')) {
+        buttons.push(el('h3', { class: 'section-label', text: t('Compositions') }));
+      }
+      const previewCount = item.entries.filter((entry) => entry.preview && entry.variant?.id !== 'V0').length;
+      const meta = [item.id, item.surface, previewCount === 0 ? t('Awaiting preview') : ''].filter(Boolean).join(' · ');
+      buttons.push(el('button', {
+        type: 'button', class: 'queue-item', 'data-item': item.id, 'aria-current': item.id === ui.opp ? 'true' : false,
+        onclick: () => {
+          if (compact.matches) ui.queue = false;
+          selectGroup(item);
+          (ui.queue ? list.querySelector('[aria-current="true"]') : $('toggle-queue'))?.focus({ preventScroll: true });
+        },
+      }, el('strong', { text: groupTitle(item) }), el('small', { text: meta })));
+    }
+    list.replaceChildren(...(buttons.length ? buttons : [el('p', { class: 'note', text: filter ? t('No matching suggestions.') : t('No suggestions recorded yet.') })]));
+    list.scrollTop = scroll;
+  }
+
+  function renderComparison() {
+    const index = groups.indexOf(group);
+    $('item-title').textContent = (group && groupTitle(group)) ?? t('No suggestions yet');
+    $('item-context').textContent = group ? [group.id, group.meta].filter(Boolean).join(' · ') : '';
+    $('step-count').textContent = index < 0 ? '' : (index + 1) + ' / ' + groups.length;
+    $('step-count').setAttribute('aria-label', index < 0 ? '' : t('Suggestion ') + (index + 1) + t(' of ') + groups.length);
+    $('prev').disabled = index <= 0;
+    $('next').disabled = index < 0 || index === groups.length - 1;
+    const picker = $('picker');
+    picker.hidden = !group || group.composition;
+    const buttons = group?.entries.map((entry) => {
+      const revision = entry.revision;
+      const meta = [
+        entry.variant?.revisions.length > 1 ? 'r' + revision.rev : '',
+        !entry.preview ? t('No preview') : '',
+        revision?.preferred ? t('Preferred') : '',
+      ].filter(Boolean).join(' · ');
+      return el('button', {
+        type: 'button', 'aria-pressed': String(entry.key === current?.key), 'data-version': entry.key,
+        onclick: () => {
+          selectEntry(entry);
+          const active = picker.querySelector('[aria-pressed="true"]');
+          active?.focus({ preventScroll: true });
+          active?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        },
+      }, document.createTextNode(entryLabel(entry)), ...(meta ? [el('small', { text: meta })] : []));
+    }) ?? [];
+    const scroll = picker.scrollLeft;
+    picker.replaceChildren(...buttons);
+    picker.scrollLeft = scroll;
+  }
+
+  function frameWindow() {
+    try {
+      const win = activeFrame?.frame.contentWindow;
+      return win?.document ? win : null;
+    } catch { return null; }
+  }
+
+  function fitFrame() {
+    if (!activeFrame) return;
+    const viewport = VIEWPORTS.find((item) => item.id === ui.viewport);
+    const wrap = $('frame-wrap');
+    const style = getComputedStyle(wrap);
+    const width = Math.max(1, wrap.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight));
+    const scale = ui.fit ? Math.min(1, width / viewport.w) : 1;
+    const { frame } = activeFrame;
+    frame.style.width = viewport.w + 'px';
+    frame.style.height = viewport.h + 'px';
+    frame.style.transform = 'scale(' + scale + ')';
+    $('frame-box').style.width = Math.floor(viewport.w * scale) + 'px';
+    $('frame-box').style.height = Math.floor(viewport.h * scale) + 'px';
+    $('preview-info').textContent = viewport.w + ' × ' + viewport.h + ' · ' + Math.round(scale * 100) + '%';
+  }
+
+  function renderPreview() {
+    const empty = $('empty');
+    const box = $('frame-box');
+    const warnings = $('preview-warnings');
+    const fallback = !current?.preview && group?.entries.find((entry) => entry.variant?.id === 'V0' && entry.preview);
+    const displayed = current?.preview ? current : fallback;
+    const notes = [];
+    if (fallback) notes.push(t('Showing the original. This version has no preview yet.'));
+    if (current?.revision?.work === 'stale') notes.push(t('The target changed after this preview was recorded.'));
+    if (group?.composition?.conflicts) notes.push(t('Composition conflict · ') + group.composition.conflicts);
+    if (displayed && !displayed.preview.fidelity) notes.push(t('Preview fidelity is unrecorded.'));
+    warnings.replaceChildren(...notes.map((note) => el('p', { class: 'notice', text: note })));
+    empty.hidden = Boolean(displayed);
+    box.hidden = !displayed;
+    if (!displayed) {
+      stopPicking?.();
+      clearLibraryHighlights();
+      outlineMotion();
+      box.replaceChildren();
+      activeFrame = null;
+      empty.replaceChildren(el('h3', { text: current ? t('No preview for this version') : t('Waiting for suggestions') }),
+        el('p', { text: current ? t('Open Review for the proposal and feedback.') : t('Recorded suggestions appear in the queue.') }));
+      $('preview-info').textContent = '';
+    } else {
+      const src = srcOf(displayed.preview);
+      if (activeFrame?.key !== displayed.key || activeFrame?.src !== src || activeFrame?.hash !== displayed.preview.hash) {
+        stopPicking?.();
+        clearLibraryHighlights();
+        outlineMotion();
+        motionAnimation?.cancel();
+        showMotionBanner();
+        const previous = activeFrame?.group === group.id ? frameWindow() : null;
+        const scroll = previous ? [previous.scrollX, previous.scrollY] : null;
+        const frame = el('iframe', { src, title: t('Preview · ') + entryLabel(displayed) });
+        activeFrame = { frame, src, hash: displayed.preview.hash, key: displayed.key, group: group.id };
+        frame.addEventListener('load', () => {
+          if (activeFrame?.frame !== frame) return;
+          if (scroll && !new URL(src, location.origin).hash) frameWindow()?.scrollTo(...scroll);
+          applyPlayback();
+          stopPicking?.();
+          if (ui.drawer === 'motion-catalog' || ui.drawer === 'motion') renderDrawer();
+          else renderMotionTools();
+        });
+        box.replaceChildren(frame, motionMatches, selectedOutline.element, candidateOutline.element);
+      }
+      activeFrame.frame.title = t('Preview · ') + entryLabel(displayed);
+      fitFrame();
+    }
+    applyPlayback();
+  }
+
+  function applyPlayback() {
+    clearInterval(speedTimer);
+    const win = frameWindow();
+    const external = activeFrame && new URL(activeFrame.src, location.origin).origin !== location.origin;
+    const message = $('playback-status');
+    message.hidden = !external;
+    message.textContent = external ? t('External preview · playback controls are unavailable.') : '';
+    $('replay').disabled = !activeFrame;
+    const playbackControls = ['pause', 'rm', 'speeds'].map($);
+    for (const button of playbackControls) button.disabled = !activeFrame || Boolean(external && !win);
+    if (!win || win.location.href === 'about:blank') return;
+    win.document.documentElement.toggleAttribute('data-jiu-reduced-motion', ui.reduced);
+    const pausedByHarness = (win.__jiuPausedByHarness ||= new WeakSet());
+    const tick = () => {
+      try {
+        for (const animation of win.document.getAnimations()) {
+          if (animation.playbackRate !== ui.speed) animation.playbackRate = ui.speed;
+          if (ui.paused && animation.playState === 'running') { animation.pause(); pausedByHarness.add(animation); }
+          if (!ui.paused && pausedByHarness.has(animation)) { animation.play(); pausedByHarness.delete(animation); }
+        }
+        if (win.gsap?.globalTimeline) {
+          win.gsap.globalTimeline.timeScale(ui.speed);
+          win.gsap.globalTimeline.paused(ui.paused);
+        }
+        win.__jiuPlayback?.({ speed: ui.speed, paused: ui.paused });
+      } catch { /* The mock may have navigated to a different origin. */ }
+    };
+    win.__jiuTick = tick;
+    if (!win.__jiuListening) {
+      win.__jiuListening = true;
+      for (const type of ['animationstart', 'transitionrun']) win.document.addEventListener(type, () => win.__jiuTick?.(), true);
+    }
+    tick();
+    speedTimer = setInterval(tick, 120);
+  }
+
+  function renderPlaybackControls() {
+    $('viewports').value = ui.viewport;
+    $('speeds').value = String(ui.speed);
+    $('fit').setAttribute('aria-pressed', String(ui.fit));
+    $('fit').textContent = ui.fit ? t('Fit') : '100%';
+    $('pause').setAttribute('aria-pressed', String(ui.paused));
+    $('pause').textContent = ui.paused ? t('Resume') : t('Pause');
+    $('rm').setAttribute('aria-pressed', String(ui.reduced));
+  }
+
+  function evidenceLink(href, label) {
+    return el('a', { href: '/run/' + href.split('/').map(encodeURIComponent).join('/'), target: '_blank', rel: 'noopener', text: label });
+  }
+
+  function motionDocument() {
+    if (!current?.revision || activeFrame?.key !== current.key || !isLocalMock(current.preview)) return null;
+    try {
+      const win = frameWindow();
+      if (!win || new URL(win.location.href).pathname !== new URL(activeFrame.src).pathname) return null;
+      return win.document;
+    } catch { return null; }
+  }
+
+  function motionBinding() {
+    const { recipe, selector, duration, trigger, preset, options, reference, variationOf } = motionDraft;
+    if (!recipe) throw new Error(t('Choose an effect for this element.'));
+    return {
+      recipe: recipe.id + '@' + recipe.version, selector, duration, trigger, previewHash: current?.preview?.hash,
+      ...(recipe.particles || recipe.controls ? { preset, options: { ...options } } : {}),
+      ...(recipe.id === 'reference-pattern' ? { reference } : {}),
+      ...(variationOf ? { variationOf } : {}),
+    };
+  }
+
+  function motionTarget(binding) {
+    const doc = motionDocument();
+    if (!doc) throw new Error(t('Open a recorded local mock to test an effect on an element.'));
+    if (binding.previewHash !== current.preview.hash) throw new Error(t('This suggestion belongs to an older render of the preview.'));
+    const problem = validateMotion(binding, t);
+    if (problem) throw new Error(problem);
+    const target = findMotionElement(doc, binding.selector);
+    if (!recipeMatchesElement(findRecipe(binding.recipe), target)) throw new Error(t('The selected element does not support this effect.'));
+    return target;
+  }
+
+  function findMotionElement(doc, selector) {
+    if (!selector) throw new Error(t('Enter a CSS selector.'));
+    if (!doc) throw new Error(t('Open a recorded local mock to pick an element.'));
+    let matches;
+    try { matches = doc.querySelectorAll(selector); }
+    catch { throw new Error(t('Enter a valid CSS selector.')); }
+    if (matches.length !== 1 || !matches[0].getClientRects().length ||
+        doc.defaultView.getComputedStyle(matches[0]).visibility !== 'visible') {
+      throw new Error(t('The selector must match one rendered element in this preview.'));
+    }
+    return matches[0];
+  }
+
+  function selectorFor(target) {
+    const doc = target.ownerDocument;
+    const path = [];
+    for (let node = target; node; node = node.parentElement) {
+      const id = node.id && '#' + CSS.escape(node.id);
+      if (id && doc.querySelectorAll(id).length === 1) { path.unshift(id); break; }
+      if (node === doc.body || node === doc.documentElement) { path.unshift(node.localName); break; }
+      let index = 1;
+      for (let sibling = node.previousElementSibling; sibling; sibling = sibling.previousElementSibling) {
+        if (sibling.localName === node.localName) index++;
+      }
+      path.unshift(CSS.escape(node.localName) + ':nth-of-type(' + index + ')');
+    }
+    return path.join(' > ');
+  }
+
+  function outlineMotion(target, overlay = selectedOutline) {
+    if (target === overlay.target) return;
+    cancelAnimationFrame(overlay.frame);
+    overlay.target = target;
+    overlay.element.hidden = true;
+    if (!target) return;
+    const paint = () => {
+      const frame = activeFrame?.frame;
+      if (!frame || !target.isConnected || target.ownerDocument !== frame.contentDocument) {
+        outlineMotion(undefined, overlay);
+        return;
+      }
+      paintOutline(overlay.element, target, frame);
+      overlay.frame = requestAnimationFrame(paint);
+    };
+    paint();
+  }
+
+  function paintOutline(outline, target, frame, frameRect = frame.getBoundingClientRect()) {
+    const { left, top, right, bottom } = target.getBoundingClientRect();
+    const scale = frameRect.width / frame.clientWidth;
+    const x = Math.max(0, left * scale);
+    const y = Math.max(0, top * scale);
+    const width = Math.min(right * scale, frameRect.width) - x;
+    const height = Math.min(bottom * scale, frameRect.height) - y;
+    outline.hidden = !(width > 0 && height > 0);
+    if (!outline.hidden) {
+      Object.assign(outline.style, { left: x + 'px', top: y + 'px', width: width + 'px', height: height + 'px' });
+    }
+  }
+
+  function markCompatibleElements(doc, recipe) {
+    if (recipe.kinds.includes('any')) {
+      motionMatches.append(el('div', { class: 'motion-outline', 'data-page': true }));
+      return () => motionMatches.replaceChildren();
+    }
+    const visible = new Map();
+    const tracked = new Set(elementsForRecipe(doc, recipe));
+    const observer = new doc.defaultView.IntersectionObserver((entries) => {
+      for (const { target, isIntersecting } of entries) {
+        if (isIntersecting && tracked.has(target) && !visible.has(target)) {
+          const outline = el('div', { class: 'motion-outline', hidden: true });
+          visible.set(target, outline);
+          motionMatches.append(outline);
+        } else if (!isIntersecting && visible.has(target)) {
+          visible.get(target).remove();
+          visible.delete(target);
+        }
+      }
+    }, { root: doc });
+    for (const target of tracked) observer.observe(target);
+    const changes = new doc.defaultView.MutationObserver(() => {
+      const updated = new Set(elementsForRecipe(doc, recipe));
+      for (const target of tracked) {
+        if (updated.has(target)) continue;
+        observer.unobserve(target);
+        tracked.delete(target);
+        visible.get(target)?.remove();
+        visible.delete(target);
+      }
+      for (const target of updated) {
+        if (tracked.has(target)) continue;
+        tracked.add(target);
+        observer.observe(target);
+      }
+    });
+    changes.observe(doc.documentElement, {
+      subtree: true, childList: true,
+      attributeFilter: ['role', 'href', 'type', 'popover', 'aria-live', 'contenteditable', 'data-icon', 'data-selection-indicator'],
+    });
+    let frame;
+    const paint = () => {
+      const view = activeFrame?.frame;
+      if (!view || view.contentDocument !== doc) return;
+      const rect = view.getBoundingClientRect();
+      for (const [target, outline] of visible) {
+        const hasOwnOutline = target === selectedOutline.target || target === candidateOutline.target;
+        if (hasOwnOutline || !target.isConnected || doc.defaultView.getComputedStyle(target).visibility !== 'visible') outline.hidden = true;
+        else paintOutline(outline, target, view, rect);
+      }
+      frame = requestAnimationFrame(paint);
+    };
+    paint();
+    return () => {
+      changes.disconnect();
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+      motionMatches.replaceChildren();
+    };
+  }
+
+  function clearLibraryHighlights() {
+    libraryHighlights?.clear();
+    libraryHighlights = null;
+  }
+
+  function selectedMotionTarget(doc) {
+    if (!doc || !motionDraft.selector) return null;
+    try { return findMotionElement(doc, motionDraft.selector); }
+    catch { return null; }
+  }
+
+  function updateLibraryHighlights() {
+    const doc = ui.drawer === 'motion-catalog' ? motionDocument() : null;
+    const { recipe } = library;
+    if (doc !== libraryHighlights?.doc || recipe !== libraryHighlights?.recipe) {
+      clearLibraryHighlights();
+      if (doc && recipe) {
+        libraryHighlights = { doc, recipe, clear: markCompatibleElements(doc, recipe) };
+      }
+    }
+    if (ui.drawer === 'motion-catalog' && !stopPicking) {
+      const target = selectedMotionTarget(doc);
+      outlineMotion(recipe && target && recipeMatchesElement(recipe, target) ? target : undefined);
+    }
+  }
+
+  function showMotionBanner(message = '') {
+    $('motion-banner').hidden = !message;
+    $('motion-message').textContent = message;
+    $('motion-cancel').hidden = !stopPicking;
+  }
+
+  function playOnCanvas(binding) {
+    stopPicking?.();
+    const target = motionTarget(binding);
+    const recipe = findRecipe(binding.recipe);
+    const reduced = ui.reduced || target.ownerDocument.defaultView.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    motionAnimation?.cancel();
+    target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    showMotionBanner(t('One-shot preview · ') + t(recipe.title) + (reduced ? t(' · Reduced motion') : ''));
+    motionAnimation = playMotion(target, recipe, { ...binding, reduced });
+    applyPlayback();
+  }
+
+  function chooseMotionRecipe(recipe) {
+    if (motionDraft.recipe === recipe) return;
+    Object.assign(motionDraft, { recipe, duration: recipe.duration, preset: defaultMotionPreset(recipe), options: {} });
+    if (!motionDraft.triggerChosen) {
+      motionDraft.trigger = catalogTriggers[recipe.trigger] ?? motionDefaults.trigger;
+      const trigger = $('motion-trigger');
+      if (trigger) trigger.value = motionDraft.trigger;
+    }
+  }
+
+  function defaultMotionPreset(recipe) {
+    if (recipe.particles) return 'soft-sparks';
+    if (recipe.presets) return Object.keys(recipe.presets)[0];
+  }
+
+  function pickMotionTarget(recipe = null) {
+    const doc = motionDocument();
+    if (!doc) return;
+    stopPicking?.();
+    pickingRecipe = recipe;
+    pickingOrigin = ui.drawer;
+    motionAnimation?.cancel();
+    if (!recipe) ui.drawer = 'motion';
+    const selected = selectedMotionTarget(doc);
+    outlineMotion(selected ?? undefined);
+    const pickable = (event) => {
+      const element = event.target.closest?.('svg') ?? event.target;
+      let target = element;
+      if (recipe) {
+        while (target && !recipeMatchesElement(recipe, target)) target = target.parentElement;
+      }
+      if (!target) return null;
+      return target !== doc.body && target !== doc.documentElement && target.getClientRects?.().length ? target : null;
+    };
+    const hover = (event) => {
+      const candidate = pickable(event);
+      outlineMotion(candidate && candidate !== selected ? candidate : undefined, candidateOutline);
+    };
+    const leave = (event) => { if (!event.relatedTarget) outlineMotion(undefined, candidateOutline); };
+    const block = (event) => { event.preventDefault(); event.stopImmediatePropagation(); };
+    const pick = (event) => {
+      block(event);
+      const target = pickable(event);
+      if (target) finishPicking(target);
+    };
+    const escape = (event) => { if (event.key === 'Escape') { block(event); finishPicking(); } };
+    const keyboardPick = (event) => {
+      escape(event);
+      if (['Enter', ' '].includes(event.key)) pick(event);
+    };
+    const controls = { pointermove: hover, pointerout: leave, focusin: hover, pointerdown: block, pointerup: block,
+      click: pick, keydown: keyboardPick };
+    stopPicking = () => {
+      for (const [name, listener] of Object.entries(controls)) doc.removeEventListener(name, listener, true);
+      document.removeEventListener('keydown', escape, true);
+      stopPicking = null;
+      pickingRecipe = null;
+      pickingOrigin = null;
+      outlineMotion(undefined, candidateOutline);
+      showMotionBanner();
+    };
+    for (const [name, listener] of Object.entries(controls)) doc.addEventListener(name, listener, true);
+    document.addEventListener('keydown', escape, true);
+    renderDrawer();
+    const instructions = selected
+      ? t('Pick a new target to replace the solid outline.')
+      : t('Hover over the preview and click the outlined element.');
+    const compatibility = recipe ? t(' Choose an element that supports ') + recipe.title.toLowerCase() + '.' : '';
+    showMotionBanner(instructions + compatibility + t(' Press Escape to cancel.'));
+    activeFrame.frame.focus({ preventScroll: true });
+  }
+
+  function finishPicking(target) {
+    const recipe = pickingRecipe;
+    const origin = pickingOrigin;
+    const keepLibrary = ui.drawer === 'motion-catalog' && recipe;
+    stopPicking?.();
+    if (target) {
+      if (target !== selectedMotionTarget(target.ownerDocument)) {
+        Object.assign(motionDraft, motionDefaults, { options: {} });
+      }
+      motionDraft.selector = selectorFor(target);
+      if (recipe) chooseMotionRecipe(recipe);
+      ui.drawer = keepLibrary ? 'motion-catalog' : 'motion';
+    } else ui.drawer = origin;
+    renderDrawer();
+    const focus = target ? $(keepLibrary ? 'library-preview' : 'motion-trigger') : null;
+    (focus ?? $('library-pick') ?? $('motion-pick'))?.focus({ preventScroll: true });
+  }
+
+  function renderMotionSuggestions(body, status, collapsible = false) {
+    const recorded = current?.revision?.feedback?.filter((entry) => entry.motion) ?? [];
+    const pending = state?.motionSuggestions?.filter((entry) => entry.ref === current?.key
+      && !recorded.some((item) => item.source === entry.source)) ?? [];
+    if (!recorded.length && !pending.length) return;
+    const list = el('section', { class: 'motion-suggestions' });
+    if (!collapsible) list.append(el('h3', { text: t('Motion suggestions') }));
+    for (const item of [...recorded, ...pending]) {
+      const { motion } = item;
+      const recipe = findRecipe(motion.recipe);
+      const presetId = recipe && (motion.preset ?? defaultMotionPreset(recipe));
+      const preset = recipe?.presets?.[presetId]?.title ??
+        (recipe?.particles ? particlePresets[presetId]?.title : motionReferences[motion.reference]);
+      const stale = motion.previewHash !== current?.preview?.hash || !recipe;
+      const canTest = !stale && recipe.id !== 'reference-pattern';
+      const label = [motion.selector, t(triggers[motion.trigger]), preset && t(preset), motion.duration + ' ms'].filter(Boolean).join(' · ');
+      list.append(el('article', { class: 'record' },
+        el('strong', { text: recipe ? t(recipe.title) : motion.recipe }),
+        el('p', { class: 'ref', text: label }),
+        ...(motion.variationOf ? [el('p', { class: 'ref', text: t('Variation of an earlier suggestion') })] : []),
+        ...(item.text ? [el('p', { class: 'note', text: item.text })] : []),
+        el('div', { class: 'actions' },
+          ...(canTest ? [el('button', { type: 'button', text: t('Test suggestion'), onclick: () => {
+            try { playOnCanvas(motion); status.textContent = ''; }
+            catch (error) { status.textContent = error.message; }
+          } })] : []),
+          el('button', { type: 'button', disabled: stale, text: t('Create variation'), onclick: () => {
+            stopPicking?.();
+            Object.assign(motionDraft, {
+              recipe, selector: motion.selector, duration: motion.duration, trigger: motion.trigger ?? 'click', triggerChosen: Boolean(motion.trigger),
+              preset: motion.preset ?? defaultMotionPreset(recipe), options: { ...motion.options },
+              reference: motion.reference ?? 'reaction-burst', note: item.text ?? '', variationOf: item.source,
+            });
+            ui.drawer = 'motion';
+            renderDrawer();
+            ($('motion-note') ?? $('motion-selector') ?? $('motion-trigger'))?.focus();
+          } })),
+        ...(stale ? [el('p', { class: 'note', text: t('From an earlier preview. Re-select the current target to propose it again.') })] : [])));
+    }
+    if (collapsible) {
+      const disclosure = el('details', { class: 'record motion-history', open: ui.motionHistory === true,
+        ontoggle: () => { ui.motionHistory = disclosure.open; } },
+      el('summary', { text: t('Motion suggestions (') + (recorded.length + pending.length) + ')' }), list);
+      body.append(disclosure);
+    } else body.append(list);
+  }
+
+  const catalogTriggers = {
+    Press: 'click', Activate: 'click', Success: 'success', 'State change': 'change',
+    Error: 'failure', Insert: 'insert', Open: 'open', Selection: 'selection', Hover: 'hover', Focus: 'focus',
+  };
+  const catalogKinds = {
+    any: 'Any element', control: 'Buttons and links', icon: 'Icons', field: 'Fields',
+    status: 'Status and alerts', text: 'Text', row: 'Rows and list items', panel: 'Panels',
+    overlay: 'Menus and popovers', dialog: 'Dialogs', tab: 'Tabs and indicators',
+  };
+  const featured = ['confirm-check', 'reaction-burst', 'press-settle', 'popover-enter'];
+  const catalogRecipes = [...featured.map((id) => recipes.find((recipe) => recipe.id === id)),
+    ...recipes.filter((recipe) => !featured.includes(recipe.id))];
+
+  function matchLibraryFilter(recipe) {
+    return (library.kind === 'any' || recipe.kinds.includes('any') || recipe.kinds.includes(library.kind)) &&
+      (library.trigger === 'any' || recipe.id === 'particles' || catalogTriggers[recipe.trigger] === library.trigger);
+  }
+
+  function effectThumb(recipe) {
+    const demo = (kind, ...content) => el('span', { class: 'effect-demo motion-sample', 'data-kind': kind }, ...content);
+    const animatedGlyph = (kind, label, icon) => {
+      const glyph = libraryIcon(icon);
+      glyph.classList.add('motion-sample');
+      return el('span', { class: 'effect-demo', 'data-kind': kind }, label, glyph);
+    };
+    const thumb = el('span', { class: 'motion-thumb', 'aria-hidden': 'true', inert: true });
+    const scenes = {
+      'press-settle': () => demo('press', t('Save')),
+      'like-pop': () => demo('reaction', libraryIcon('heart')),
+      'reaction-burst': () => demo('reaction', libraryIcon('like')),
+      'confirm-check': () => demo('success', libraryIcon('check'), t('Saved')),
+      'status-crossfade': () => demo('status', t('Synced')),
+      'retry-nudge': () => demo('error', t('Invalid URL'), libraryIcon('warning')),
+      'new-row-settle': () => demo('row', libraryIcon('file'), t('New file')),
+      'detail-reveal': () => demo('detail', t('File details')),
+      'popover-enter': () => el('span', { class: 'effect-anchor' }, el('span', { text: '···' }),
+        demo('popover', el('span', { text: t('Rename') }), el('span', { text: t('Duplicate') }))),
+      'dialog-enter': () => el('span', { class: 'effect-dialog-stage' },
+        demo('dialog', t('Publish file?'), el('span', { text: t('Publish') }))),
+      'tab-indicator': () => el('span', { class: 'effect-tabs' },
+        el('span', { text: t('Files') }), el('span', { text: t('Activity') }), demo('indicator')),
+      'directional-shift': () => animatedGlyph('direction', t('Next'), 'arrow'),
+      'icon-turn': () => animatedGlyph('disclosure', t('Details'), 'chevron'),
+      'edge-reveal': () => demo('reveal', t('Delivery'), el('small', { text: t('Arrives Friday') })),
+      'focus-halo': () => demo('field', libraryIcon('search'), t('Search')),
+      'ink-ripple': () => demo('ripple', t('Apply')),
+      particles: () => demo('particles', libraryIcon('spark')),
+      'reference-pattern': () => demo('reference', libraryIcon('reference'), t('Agent mock')),
+    };
+    thumb.append(scenes[recipe.id]());
+    return thumb;
+  }
+
+  function effectCard(recipe, choose, pressed) {
+    const thumb = effectThumb(recipe);
+    const sample = thumb.querySelector('.motion-sample');
+    const play = () => {
+      if (recipe.id === 'reference-pattern') return;
+      sampleAnimation?.cancel();
+      sampleAnimation = playMotion(sample, recipe, {
+        accentContainer: thumb,
+        ...(recipe.particles ? { particleContainer: thumb, options: { count: 6, distance: 32 } } : {}),
+        reduced: ui.reduced || matchMedia('(prefers-reduced-motion: reduce)').matches,
+      });
+    };
+    return el('button', {
+      class: 'effect-card', type: 'button', 'data-recipe': recipe.id, 'aria-pressed': pressed,
+      onpointerenter: (event) => { if (event.pointerType === 'mouse' || event.pointerType === 'pen') play(); },
+      onfocus: (event) => { if (event.currentTarget.matches(':focus-visible')) play(); },
+      onclick: (event) => { if (event.pointerType === 'touch') play(); choose(); },
+    }, thumb, el('span', { class: 'effect-copy' },
+      el('strong', { text: t(recipe.title) }), el('small', { text: t(recipe.note) })));
+  }
+
+  function libraryIcon(icon) {
+    const namespace = 'http://www.w3.org/2000/svg';
+    const graphic = document.createElementNS(namespace, 'svg');
+    const use = document.createElementNS(namespace, 'use');
+    graphic.setAttribute('aria-hidden', 'true');
+    use.setAttribute('href', '#library-icon-' + icon);
+    graphic.append(use);
+    return graphic;
+  }
+
+  function libraryAction(icon, label, attrs) {
+    const button = el('button', { type: 'button', ...attrs }, libraryIcon(icon), label);
+    button.classList.add('library-action');
+    return button;
+  }
+
+  function renderLibraryInspector() {
+    const inspector = $('library-inspector');
+    const { recipe } = library;
+    inspector.replaceChildren();
+    inspector.hidden = !recipe;
+    if (!recipe) return;
+    const doc = motionDocument();
+    const target = selectedMotionTarget(doc);
+    const canConfigure = target && recipeMatchesElement(recipe, target);
+    const reference = recipe.id === 'reference-pattern';
+    const actions = el('div', { class: 'actions' });
+    const status = el('p', { class: 'status bad', role: 'status' });
+    inspector.append(el('p', { class: 'note' }, el('strong', { text: t('Applies to ') }), t(recipe.target)), actions, status);
+
+    if (!doc) {
+      status.textContent = t('Open a recorded local mock to use an effect on the page.');
+      return;
+    }
+    const pick = libraryAction(stopPicking ? 'close' : 'target',
+      stopPicking ? t('Cancel selection') : target ? t('Change target') : t('Pick a target'), {
+        id: 'library-pick',
+        onclick: () => stopPicking ? finishPicking() : pickMotionTarget(recipe),
+      });
+    actions.append(pick);
+    if (stopPicking || !canConfigure) {
+      if (!stopPicking && target) status.textContent = t('The selected element does not support this effect.');
+      return;
+    }
+    if (!reference) actions.append(libraryAction('preview', t('Preview on page'), {
+      id: 'library-preview', class: 'primary', onclick: () => {
+        try {
+          chooseMotionRecipe(recipe);
+          playOnCanvas(motionBinding());
+          status.textContent = '';
+        } catch (error) { status.textContent = error.message; }
+      },
+    }));
+    actions.append(libraryAction('configure', t('Configure'), {
+      onclick: () => {
+        chooseMotionRecipe(recipe);
+        ui.drawer = 'motion';
+        renderDrawer();
+        $('motion-trigger')?.focus({ preventScroll: true });
+      },
+    }));
+  }
+
+  function resetMotionSelection() {
+    stopPicking?.();
+    motionAnimation?.cancel();
+    sampleAnimation?.cancel();
+    showMotionBanner();
+    outlineMotion();
+    library.recipe = null;
+    Object.assign(motionDraft, motionDefaults, { options: {} });
+  }
+
+  function clearMotionSelection() {
+    resetMotionSelection();
+    ui.drawer = 'motion-catalog';
+    renderDrawer();
+    $('library-title').focus({ preventScroll: true });
+  }
+
+  function selectLibraryRecipe(recipe) {
+    if (library.recipe === recipe) resetMotionSelection();
+    else {
+      stopPicking?.();
+      motionAnimation?.cancel();
+      showMotionBanner();
+      library.recipe = recipe;
+    }
+    renderMotionTools();
+    renderLibraryInspector();
+    $('library-cards').querySelector('[aria-pressed="true"]')?.scrollIntoView({ block: 'nearest' });
+  }
+
+  function renderLibraryCatalog() {
+    sampleAnimation?.cancel();
+    const cards = $('library-cards');
+    const matches = catalogRecipes.filter(matchLibraryFilter);
+    if (library.recipe && !matches.includes(library.recipe)) {
+      library.recipe = null;
+      motionAnimation?.cancel();
+      showMotionBanner();
+    }
+    cards.replaceChildren(...matches.map((recipe) => effectCard(
+      recipe, () => selectLibraryRecipe(recipe), String(library.recipe === recipe),
+    )));
+    if (!matches.length) cards.append(el('p', { class: 'note', text: t('No effects match these filters.') }));
+    renderMotionTools();
+    renderLibraryInspector();
+  }
+
+  function renderLibrary() {
+    const scrollArea = $('effect-library').querySelector('.library-body');
+    const scrollTop = scrollArea.scrollTop;
+    const filter = (name, choices, key) => {
+      const control = motionSelect(choices, library[key], (value) => {
+        stopPicking?.();
+        library[key] = value;
+        if (key === 'kind' && value === 'any') resetMotionSelection();
+        renderLibraryCatalog();
+      });
+      control.id = 'library-filter-' + key;
+      return el('div', { class: 'library-filter' }, el('label', { for: control.id, text: t(name) }), control);
+    };
+    $('library-filters').replaceChildren(
+      filter(t('Element'), catalogKinds, 'kind'), filter(t('Trigger'), { any: t('Any trigger'), ...triggers }, 'trigger'),
+    );
+    renderLibraryCatalog();
+    const status = el('p', { class: 'status', role: 'status' });
+    const history = $('library-history');
+    history.replaceChildren();
+    renderMotionSuggestions(history, status, true);
+    history.append(status);
+    scrollArea.scrollTop = scrollTop;
+  }
+
+  function motionField(name, control) {
+    control.id ||= 'motion-option-' + name.toLowerCase().replace(/[^a-z]+/g, '-');
+    return el('div', { class: 'motion-field' }, el('label', { for: control.id, text: t(name) }), control);
+  }
+
+  function motionOptions(options) {
+    options.replaceChildren();
+    const { recipe } = motionDraft;
+    if (recipe.id === 'reference-pattern') {
+      options.append(motionField('Reference preset', motionSelect(
+        motionReferences, motionDraft.reference, (value) => { motionDraft.reference = value; },
+      )));
+    }
+    if (!recipe.particles && !recipe.controls) return;
+    const values = recipe.particles ? particleSettings(motionDraft) : effectSettings(recipe, motionDraft);
+    const presets = recipe.particles ? particlePresets : recipe.presets;
+    const fields = recipe.controls ?? {
+      shape: { label: 'Shape', choices: particleShapes },
+      trajectory: { label: 'Trajectory', choices: particleTrajectories },
+      count: { label: 'Count', min: 3, max: 16 },
+      distance: { label: 'Spread (px)', min: 8, max: 48 },
+      color: { label: 'Color' },
+    };
+    const set = (key, value) => {
+      if (value === '') delete motionDraft.options[key];
+      else motionDraft.options[key] = value;
+    };
+    options.append(
+      motionField(recipe.particles ? 'Particle preset' : 'Preset', motionSelect(Object.fromEntries(
+        Object.entries(presets).map(([key, preset]) => [key, preset.title]),
+      ), motionDraft.preset, (value) => {
+        motionDraft.preset = value;
+        motionDraft.options = {};
+        motionOptions(options);
+        options.querySelector('select').focus();
+      })),
+    );
+    for (const [key, { label, choices, min, max }] of Object.entries(fields)) {
+      let field;
+      if (choices) field = motionSelect(choices, values[key], (value) => set(key, value));
+      else if (min !== undefined) field = el('input', {
+        type: 'number', min, max, step: 1, value: values[key],
+        oninput: (event) => set(key, event.target.valueAsNumber),
+      });
+      else field = el('input', {
+        type: 'text', maxlength: 7, value: values[key] ?? '', placeholder: t('Element color'),
+        oninput: (event) => set(key, event.target.value.trim()),
+      });
+      options.append(motionField(label, field));
+    }
+  }
+
+  function renderEffectSettings(body, status, changeEffect) {
+    const { recipe } = motionDraft;
+    const referenceOnly = recipe.id === 'reference-pattern';
+    const duration = el('input', { type: 'number', min: 80, max: 300, step: 1, value: motionDraft.duration,
+      oninput: () => { motionDraft.duration = duration.valueAsNumber; } });
+    const note = el('textarea', { id: 'motion-note', maxlength: 2000, rows: 2,
+      placeholder: t('E.g. Use the folder-tab shape from our icons and the same easing as our menus.'),
+      oninput: () => { motionDraft.note = note.value; } });
+    note.value = motionDraft.note;
+    const options = el('div', { class: 'motion-options' });
+    motionOptions(options);
+    const save = el('button', { class: 'primary', type: 'button', text: t('Queue suggestion'), onclick: async () => {
+      save.disabled = true;
+      try {
+        const motion = motionBinding();
+        motionTarget(motion);
+        const text = motionDraft.note.trim();
+        if (motion.trigger === 'custom' && !text) throw new Error(t('Describe the custom trigger in the variation request.'));
+        const event = { type: 'motion-suggestion', ref: current.key, text, motion, viewport: ui.viewport };
+        const result = await fetch('/api/events', {
+          method: 'POST', headers: { 'content-type': 'application/json', 'x-jiu-lang': language }, body: JSON.stringify(event),
+        });
+        if (!result.ok) throw new Error(await result.text());
+        const { file } = await result.json();
+        const suggestions = state.motionSuggestions ??= [];
+        if (!suggestions.some((item) => item.source === file)) suggestions.push({ ...event, source: file });
+        if (ui.drawer === 'motion' && current?.key === event.ref) {
+          if (motionDraft.variationOf === motion.variationOf) motionDraft.variationOf = undefined;
+          renderDrawer();
+          $('motion-status').textContent = t('Queued for review.');
+          $('motion-status').focus();
+        }
+      } catch (error) { status.textContent = error.message; }
+      finally { save.disabled = false; }
+    } });
+    const test = el('button', { type: 'button', text: t('Preview on page'), onclick: () => {
+      try { playOnCanvas(motionBinding()); status.textContent = ''; }
+      catch (error) { status.textContent = error.message; }
+    } });
+    body.append(
+      el('section', { class: 'record motion-effect' },
+        el('div', { class: 'motion-heading' },
+          el('h3', { id: 'motion-effect-title', tabindex: '-1', text: t(recipe.title) }),
+          el('button', { type: 'button', text: t('Change effect'), onclick: changeEffect })),
+        el('p', { class: 'note', text: t(recipe.note) })),
+      ...(options.childElementCount ? [options] : []),
+      ...(referenceOnly ? [] : [motionField('Duration (ms)', duration)]),
+      motionField('Variation request for the agent', note),
+      el('p', { class: 'note', text: referenceOnly
+        ? t('The agent builds a preview for this reference.')
+        : t('The test plays the motion once. The trigger and any UI state changes are for the agent to implement.') }),
+      el('div', { class: 'actions' }, ...(referenceOnly ? [] : [test]), save),
+    );
+  }
+
+  function renderMotion(body) {
+    const status = el('p', { id: 'motion-status', class: 'status', role: 'status', tabindex: '-1' });
+    const doc = motionDocument();
+    const context = el('section', { class: 'record motion-context' });
+    const settings = el('section', { class: 'motion-settings' });
+    body.append(context, settings);
+    if (stopPicking) {
+      context.textContent = selectedOutline.target
+        ? t('The solid outline marks the current target. Click a new element to replace it.')
+        : t('Select an element in the preview to see its compatible effects.');
+      return;
+    }
+    renderMotionSuggestions(body, status, true);
+    body.append(status);
+    if (!doc || !motionDraft.selector) {
+      context.textContent = doc ? t('Use the picker to select an element on the canvas.') : t('Element selection requires a recorded local mock.');
+      return;
+    }
+
+    const heading = el('div', { class: 'motion-heading' },
+      el('h3', { text: t('Selected element') }),
+      el('button', { type: 'button', text: t('Clear selection'), onclick: clearMotionSelection }));
+    const selector = el('div', { class: 'motion-selector', role: 'group', 'aria-label': t('Element selector') });
+    const error = el('p', { class: 'status bad', role: 'status' });
+    const trigger = motionSelect(triggers, motionDraft.trigger, (value) => {
+      Object.assign(motionDraft, { trigger: value, triggerChosen: true });
+    });
+    trigger.id = 'motion-trigger';
+    const triggerField = motionField(t('Trigger in the product'), trigger);
+    context.append(heading, selector, error, triggerField);
+    let target;
+
+    function refreshTarget() {
+      const previous = target;
+      target = null;
+      error.textContent = '';
+      try { target = findMotionElement(doc, motionDraft.selector); }
+      catch (problem) { error.textContent = problem.message; }
+      if (!stopPicking) outlineMotion(target ?? undefined);
+      triggerField.hidden = !target;
+      if (target !== previous) {
+        if (previous && !stopPicking) { motionAnimation?.cancel(); showMotionBanner(); }
+        renderEffects();
+      }
+    }
+
+    function renderEffects() {
+      settings.replaceChildren();
+      if (!target) return;
+      const compatible = recipesForElement(target);
+      if (!compatible.includes(motionDraft.recipe)) motionDraft.recipe = null;
+      if (motionDraft.recipe) {
+        renderEffectSettings(settings, status, () => {
+          motionDraft.recipe = null;
+          motionAnimation?.cancel();
+          showMotionBanner();
+          renderEffects();
+          settings.querySelector('button')?.focus();
+        });
+        return;
+      }
+      const cards = catalogRecipes.filter((recipe) => compatible.includes(recipe)).map((recipe) => effectCard(recipe, () => {
+        chooseMotionRecipe(recipe);
+        renderEffects();
+        $('motion-effect-title').focus();
+      }));
+      settings.append(el('h3', { text: t('Compatible effects') }), el('div', { class: 'effect-grid' }, ...cards));
+    }
+
+    function showCrumbs(focus = false) {
+      if (!target) { editSelector(false); return; }
+      const path = [];
+      for (let step = target; step && step !== doc.documentElement; step = step.parentElement) {
+        path.unshift(el('button', { type: 'button', text: step.localName + (step.id ? '#' + step.id : ''),
+          title: selectorFor(step), 'aria-current': step === target ? 'true' : null,
+          onclick: () => {
+            motionDraft.selector = selectorFor(step);
+            refreshTarget();
+            target?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            showCrumbs(true);
+          } }));
+      }
+      const crumbs = el('div', { class: 'motion-crumbs', role: 'group', 'aria-label': t('Element ancestry') });
+      for (const button of path) {
+        if (crumbs.childElementCount) crumbs.append(el('span', { text: '›', 'aria-hidden': 'true' }));
+        crumbs.append(button);
+      }
+      const edit = el('button', { type: 'button', text: t('Edit'), 'aria-label': t('Edit CSS selector'),
+        onclick: () => editSelector(true) });
+      selector.replaceChildren(crumbs, el('span', { class: 'selector-tools' }, edit));
+      crumbs.scrollLeft = crumbs.scrollWidth;
+      if (focus) crumbs.querySelector('[aria-current]')?.focus({ preventScroll: true });
+    }
+
+    function editSelector(focus) {
+      const original = motionDraft.selector;
+      const input = el('input', { id: 'motion-selector', type: 'text', 'aria-label': t('CSS selector'),
+        maxlength: 512, value: original, placeholder: '#element' });
+      const done = el('button', { type: 'button', text: t('Done'), disabled: !target,
+        onclick: () => { if (target) showCrumbs(true); } });
+      input.addEventListener('input', () => {
+        const previous = target;
+        motionDraft.selector = input.value.trim();
+        refreshTarget();
+        done.disabled = !target;
+        if (target && previous !== target) target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      });
+      input.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+          event.stopPropagation();
+          motionDraft.selector = original;
+          refreshTarget();
+          showCrumbs(true);
+        } else if (event.key === 'Enter' && target) {
+          target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+          showCrumbs(true);
+        }
+      });
+      selector.replaceChildren(input, el('span', { class: 'selector-tools' }, done));
+      if (focus) { input.focus(); input.select(); }
+    }
+
+    selector.addEventListener('dblclick', (event) => {
+      if (!event.target.closest('button,input')) editSelector(true);
+    });
+    refreshTarget();
+    showCrumbs();
+  }
+
+  function motionSelect(choices, selected, change) {
+    const select = el('select', { onchange: (event) => change(event.target.value) },
+      ...Object.entries(choices).map(([value, text]) => el('option', { value, text: t(text) })));
+    select.value = selected;
+    return select;
+  }
+
+  function renderChecks(body) {
+    const { checks, reports, error } = state.diagnostics ?? {};
+    if (error) body.append(el('p', { class: 'notice', text: error }));
+    const appendList = (items, heading) => {
+      if (!items?.length) return;
+      const list = el('div', { id: heading === 'Checks' ? 'checks-list' : false, class: 'drawer-content' });
+      for (const item of items) {
+        const card = el('article', { class: 'record check', 'data-status': item.status },
+          el('div', { class: 'check-head' }, el('strong', { text: items === reports ? t(item.title) : item.title }), el('span', { class: 'check-status', text: t(STATUSES[item.status]) })));
+        if (item.detail) card.append(el('p', { class: 'note', text: item.detail }));
+        if (item.file) card.append(evidenceLink(item.file, t('Read report')));
+        const linked = groups.find((entry) => entry.id === item.opportunity);
+        if (linked) card.append(el('button', { text: t('Open ') + linked.id, onclick: () => {
+          ui.drawer = null;
+          selectGroup(linked);
+          $('checks').focus();
+        } }));
+        list.append(card);
+      }
+      body.append(el('h3', { text: t(heading) }), list);
+    };
+    if (checks?.length) appendList(checks, 'Checks');
+    else body.append(el('p', { class: 'note', text: t('Individual checks have not been recorded for this run.') }));
+    appendList(reports, t('Diagnostic reports'));
+  }
+
+  function renderReview(body) {
+    if (group?.composition) {
+      body.append(el('p', { text: group.meta }));
+      if (group.composition.fidelity) body.append(el('p', { class: 'note', text: group.composition.fidelity }));
+      return;
+    }
+    if (!current?.revision) return;
+    const entry = current;
+    const { key, revision } = entry;
+    body.append(el('h3', { text: entryLabel(entry) }), el('p', { class: 'ref', text: key }),
+      el('p', { class: 'note', text: [t(revision.decision), t(revision.work), revision.preferred ? t('Preferred') : ''].filter(Boolean).join(' · ') }));
+    if (revision.file) body.append(evidenceLink(revision.file, t('Read proposal')));
+    if (entry.preview?.fidelity) body.append(el('p', { class: 'note', text: t('Fidelity · ') + entry.preview.fidelity }));
+    if (revision.workEvidence) body.append(el('p', { class: 'note', text: revision.workEvidence }));
+    const textarea = el('textarea', {
+      id: 'fb', 'aria-label': t('Feedback'), placeholder: t('What would you keep or change?'),
+      oninput: (event) => drafts.set(key, event.target.value),
+    });
+    textarea.value = drafts.get(key) ?? '';
+    const status = el('div', { class: 'status', role: 'status' });
+    const showStatus = () => {
+      const saved = feedback.get(key);
+      status.textContent = saved?.message ?? '';
+      status.className = 'status ' + (saved?.kind ?? '');
+    };
+    const showMessage = (message, kind) => {
+      feedback.set(key, { message, kind });
+      showStatus();
+    };
+    const actions = el('div', { class: 'actions' });
+    const send = (type, label, primary) => el('button', { class: primary ? 'primary' : '', text: label, onclick: async () => {
+      const text = textarea.value.trim();
+      if ((type === 'comment' || type === 'adjust') && !text) {
+        showMessage(t('Add feedback before sending.'), 'bad');
+        textarea.focus();
+        return;
+      }
+      for (const button of actions.children) button.disabled = true;
+      try {
+        const result = await fetch('/api/events', {
+          method: 'POST', headers: { 'content-type': 'application/json', 'x-jiu-lang': language },
+          body: JSON.stringify({ type, ref: key, text, viewport: ui.viewport, reducedMotion: ui.reduced, speed: ui.speed }),
+        });
+        if (!result.ok) throw new Error(await result.text());
+        if (drafts.get(key)?.trim() === text) {
+          drafts.delete(key);
+          textarea.value = '';
+        }
+        showMessage(t('Queued for the controller (') + t(type) + ').', 'ok');
+      } catch (error) { showMessage(error.message, 'bad'); }
+      finally { for (const button of actions.children) button.disabled = false; }
+    } });
+    if (entry.variant.id !== 'V0') {
+      actions.append(send('prefer', t('Prefer'), true), send('adjust', t('Request adjustment')), send('comment', t('Comment')),
+        send('defer', t('Defer')), send('reject', t('Reject')));
+    } else actions.append(send('comment', t('Comment'), true));
+    showStatus();
+    body.append(textarea, actions, status);
+    if (entry.variant.id !== 'V0') body.append(el('p', { class: 'note', text: t('To authorize implementation, give the controller this exact revision.') }));
+    if (revision.feedback?.some((entry) => !entry.motion)) {
+      body.append(el('h3', { text: t('Feedback history') }));
+      for (const item of revision.feedback.filter((entry) => !entry.motion)) {
+        body.append(el('article', { class: 'record' }, el('strong', { text: t(item.type) }),
+          el('p', { text: item.text || '' }), el('small', { text: [item.viewport, item.ts].filter(Boolean).join(' · ') })));
+      }
+    }
+    renderMotionSuggestions(body, status);
+  }
+
+  function renderMotionTools() {
+    const catalogOpen = ui.drawer === 'motion-catalog';
+    $('motion-pick').disabled = !motionDocument();
+    $('motion-pick').setAttribute('aria-pressed', String(Boolean(stopPicking)));
+    $('motion').setAttribute('aria-expanded', String(catalogOpen));
+    $('effect-library').hidden = !catalogOpen;
+    $('library-clear').hidden = !(library.recipe || motionDraft.selector || stopPicking);
+    for (const row of $('library-cards').querySelectorAll('[data-recipe]')) {
+      row.setAttribute('aria-pressed', String(row.dataset.recipe === library.recipe?.id));
+    }
+    updateLibraryHighlights();
+  }
+
+  function renderDrawer() {
+    $('aside').hidden = !ui.drawer || ui.drawer === 'motion-catalog';
+    $('aside').dataset.drawer = ui.drawer ?? '';
+    for (const id of ['review', 'checks']) $(id).setAttribute('aria-expanded', String(ui.drawer === id));
+    if (ui.drawer === 'motion-catalog') { renderLibrary(); return; }
+    renderMotionTools();
+    if (ui.drawer !== 'motion' && !stopPicking) outlineMotion();
+    sampleAnimation?.cancel();
+    if (!ui.drawer) return;
+    $('drawer-title').textContent = { review: t('Review'), checks: t('Diagnostic checks'), motion: t('Configure motion') }[ui.drawer];
+    const body = $('drawer-content');
+    body.replaceChildren();
+    if (ui.drawer === 'checks') renderChecks(body);
+    else if (ui.drawer === 'motion') renderMotion(body);
+    else renderReview(body);
+  }
+
+  function render() {
+    renderControls();
+    renderQueue();
+    renderComparison();
+    renderPreview();
+    renderPlaybackControls();
+    renderDrawer();
+    persist();
+  }
+
+  function selectGroup(item, preferredEntry) {
+    const lastKey = current?.key;
+    const lastHash = current?.preview?.hash;
+    group = item;
+    const entries = group?.entries ?? [];
+    const desired = preferredEntry ?? remembered.get(group?.id);
+    current = entries.find((entry) => entry.key === desired) ?? entries.find((entry) => entry.preview) ?? entries[0];
+    if (lastKey !== current?.key || lastHash !== current?.preview?.hash) {
+      stopPicking?.();
+      motionAnimation?.cancel();
+      showMotionBanner();
+      motionDraft.recipe = null;
+      motionDraft.selector = '';
+      motionDraft.note = '';
+      motionDraft.variationOf = undefined;
+    }
+    ui.opp = group?.id ?? null;
+    ui.entry = current?.key ?? null;
+    ui.paused = false;
+    if (!current && ui.drawer === 'review') ui.drawer = null;
+    render();
+  }
+
+  function selectEntry(entry) {
+    if (current?.key === entry.key) return;
+    remembered.set(group.id, entry.key);
+    selectGroup(group, entry.key);
+  }
+
+  function moveSuggestion(delta) {
+    const next = groups[groups.indexOf(group) + delta];
+    if (next) selectGroup(next);
+  }
+
+  function renderViewports() {
+    $('viewports').replaceChildren(...VIEWPORTS.map(viewport =>
+      el('option', { value: viewport.id, text: t(viewport.label) + ' ' + viewport.w })));
+    $('viewports').value = ui.viewport;
+  }
+  for (const speed of SPEEDS) $('speeds').append(el('option', { value: speed, text: speed + '×' }));
+  $('viewports').onchange = (event) => { ui.viewport = event.target.value; fitFrame(); persist(); };
+  $('speeds').onchange = (event) => { ui.speed = Number(event.target.value); applyPlayback(); persist(); };
+  $('fit').onclick = () => { ui.fit = !ui.fit; renderPlaybackControls(); fitFrame(); persist(); };
+  $('pause').onclick = () => { ui.paused = !ui.paused; renderPlaybackControls(); applyPlayback(); };
+  $('rm').onclick = () => { ui.reduced = !ui.reduced; sampleAnimation?.cancel(); renderPlaybackControls(); renderPreview(); persist(); };
+  $('replay').onclick = () => {
+    if (!activeFrame) return;
+    stopPicking?.();
+    showMotionBanner();
+    activeFrame.frame.src = activeFrame.src;
+  };
+  $('toggle-queue').onclick = () => { ui.queue = !ui.queue; renderQueue(); if (ui.queue) $('filter').focus(); };
+  $('filter').oninput = renderQueue;
+  $('prev').onclick = () => moveSuggestion(-1);
+  $('next').onclick = () => moveSuggestion(1);
+  for (const [id, drawer] of [['checks', 'checks'], ['review', 'review'], ['motion', 'motion-catalog']]) $(id).onclick = () => {
+    stopPicking?.();
+    showMotionBanner();
+    ui.drawer = ui.drawer === drawer ? null : drawer;
+    if (ui.drawer && compact.matches) { ui.queue = false; renderQueue(); }
+    renderDrawer();
+    if (ui.drawer) $(ui.drawer === 'motion-catalog' ? 'library-back' : 'close-drawer').focus();
+  };
+  $('motion-pick').onclick = () => {
+    if (stopPicking) finishPicking();
+    else {
+      if (ui.queue && compact.matches) { ui.queue = false; renderQueue(); }
+      pickMotionTarget();
+    }
+  };
+  $('motion-cancel').onclick = () => finishPicking();
+  function closeDrawer() {
+    stopPicking?.();
+    showMotionBanner();
+    const opener = ui.drawer;
+    ui.drawer = null;
+    renderDrawer();
+    $(({ 'motion-catalog': 'motion', motion: 'motion-pick' })[opener] ?? opener)?.focus();
+  }
+  $('close-drawer').onclick = closeDrawer;
+  $('library-back').onclick = closeDrawer;
+  $('library-clear').onclick = clearMotionSelection;
+  $('refresh').onclick = load;
+  compact.addEventListener('change', (event) => { ui.queue = !event.matches; if (state) renderQueue(); });
+  new ResizeObserver(fitFrame).observe($('frame-wrap'));
+
+  document.addEventListener('keydown', (event) => {
+    if (stopPicking) return;
+    if (event.key === 'Escape' && ui.drawer) { closeDrawer(); return; }
+    if (!state || event.metaKey || event.ctrlKey || event.altKey ||
+        event.target.matches?.('input,textarea,select,[contenteditable]')) return;
+    if (event.shiftKey && ['ArrowLeft', 'ArrowRight'].includes(event.key)) {
+      event.preventDefault();
+      moveSuggestion(event.key === 'ArrowRight' ? 1 : -1);
+      return;
+    }
+    const versions = group?.entries ?? [];
+    if (/^[1-9]$/.test(event.key) && versions[Number(event.key) - 1]) selectEntry(versions[Number(event.key) - 1]);
+    else if (versions.length > 1 && ['ArrowLeft', 'ArrowRight'].includes(event.key)) {
+      event.preventDefault();
+      const delta = event.key === 'ArrowRight' ? 1 : -1;
+      selectEntry(versions[(versions.indexOf(current) + delta + versions.length) % versions.length]);
+    } else if (event.key.toLowerCase() === 'r') $('replay').click();
+    else if (event.key === ' ' && !event.target.closest?.('button,a,summary')) { event.preventDefault(); $('pause').click(); }
+  });
+
+  connectPreferences(() => {
+    renderViewports();
+    if (state) {
+      groups = reviewGroups();
+      group = groups.find(item => item.id === ui.opp);
+      current = group?.entries.find(entry => entry.key === ui.entry);
+      render();
+    }
+  }, () => { if (state) renderControls(); });
+  renderViewports();
+
+  async function load() {
+    if (location.protocol === 'file:') {
+      $('empty').textContent = t('Open the lab through the server: node <skill>/scripts/jiu.mjs serve <R-xxx>.');
+      return;
+    }
+    $('refresh').disabled = true;
+    try {
+      const response = await fetch('/api/state', { cache: 'no-store' });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      state = await response.json();
+      groups = reviewGroups();
+      const item = groups.find((entry) => entry.entries.some((version) => version.key === ui.entry))
+        ?? groups.find((entry) => entry.id === ui.opp)
+        ?? groups[0];
+      selectGroup(item, ui.entry);
+    } catch (error) { $('item-context').textContent = t('Could not load run: ') + error.message; }
+    finally { $('refresh').disabled = false; }
+  }
+  $('review').disabled = true;
+  $('prev').disabled = true;
+  $('next').disabled = true;
+  load();
+})();
+</script>
+</body>
+</html>

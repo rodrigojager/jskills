@@ -54,6 +54,26 @@ The installer selects the jtasks instructions for that agent. Use `--dry-run` to
 
 For the HTML renderer, run `python scripts/setup.py --skip-mermaid` from the installed `plan-to-html` directory. It installs pinned Python dependencies inside that skill. See the [renderer documentation](skills/plan-to-html/README.md) for examples and optional packages. The scout script uses Python and needs network access to search its public sources.
 
+### Optional UI tools
+
+Both tools bring together curated checks from several sources and put them into a repeatable workflow. Their CLIs track each run, and their browser interfaces let you evaluate before/after previews, request revisions, and approve specific changes.
+
+| Optional tool | When to use it |
+| --- | --- |
+| [jdeslop](skills/jdeslop/SKILL.md) | After the visual direction is set, audit an existing interface for recurring AI tells in layout, styling, behavior, and copy. The deduplicated checks record evidence by surface. Use the review panel to compare fixes individually or cumulatively and queue approved source edits one at a time. See the [checks and their sources](skills/jdeslop/references/sources.md). |
+| [jjuicer](skills/juice-it-up/README.md) | Polish an interface through feedback, animated microinteractions, or optional seasonal touches. Use a full pass or focus on motion or seasonal opportunities. In the Lab, compare variants against the original and audition customizable effects on elements before approving individual revisions or a batch. The agent skill is invoked as `juice-it-up`. See the [source credits](skills/juice-it-up/NOTICE.md). |
+
+The standard installation leaves both tools out. Use `--optional` to install only the tools you select, even if the standard skills are already installed. Replace `codex` with `claude` or `opencode` as needed.
+
+```sh
+python scripts/install_skills.py codex --optional jdeslop
+python scripts/install_skills.py codex --optional jjuicer
+# Or install both in one command
+python scripts/install_skills.py codex --optional jdeslop jjuicer
+```
+
+The installer copies the selected skill files. For `jdeslop`, build and install the CLI with Rust and Cargo by running `cargo install --locked --path cli` from the installed `jdeslop` directory. Its audit and review engines need Python 3.10 or later. See the [CLI and review workflow](skills/jdeslop/references/coverage.md#combined-cli-run). For jjuicer, use Node.js 18 or later and run `node scripts/jiu.mjs --help` from the installed `juice-it-up` directory.
+
 ## Install the CLIs
 
 Install from the checkout using Rust and Cargo. See the individual tool documentation for platform and packaging details.

@@ -18,8 +18,10 @@ SKILLS = (
     "to-plan",
 )
 TASK_SKILLS = ("estimate-jtasks", "jtasks", "to-jtasks")
+OPTIONAL_SKILLS = {"jdeslop": "jdeslop", "jjuicer": "juice-it-up"}
 IGNORED = shutil.ignore_patterns(
-    ".git", ".vendor", "__pycache__", "*.pyc", ".test-output", "node_modules"
+    ".git", ".vendor", "__pycache__", "*.pyc", ".test-output", "node_modules",
+    ".juice-it-up", "target",
 )
 
 
@@ -35,13 +37,20 @@ def agent_directory(agent: str) -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("agent", choices=("claude", "codex", "opencode"))
+    parser.add_argument(
+        "--optional", nargs="+", action="extend", choices=OPTIONAL_SKILLS,
+        help="Install only the named optional skills. Omit this option for the standard collection.",
+    )
     parser.add_argument("--destination", type=Path, help="Override the agent's skills directory.")
     parser.add_argument("--dry-run", action="store_true", help="List the destinations without writing.")
     args = parser.parse_args()
     destination = (args.destination or agent_directory(args.agent)).expanduser().resolve()
-    sources = [ROOT / "skills" / name for name in SKILLS]
-    sources.append(ROOT / "tools" / "jproject" / "skills" / "jproject")
-    sources.extend(ROOT / "tools" / "jtasks" / "skills" / args.agent / name for name in TASK_SKILLS)
+    if args.optional:
+        sources = [ROOT / "skills" / OPTIONAL_SKILLS[name] for name in dict.fromkeys(args.optional)]
+    else:
+        sources = [ROOT / "skills" / name for name in SKILLS]
+        sources.append(ROOT / "tools" / "jproject" / "skills" / "jproject")
+        sources.extend(ROOT / "tools" / "jtasks" / "skills" / args.agent / name for name in TASK_SKILLS)
 
     if destination.exists() and not destination.is_dir():
         parser.error(f"The destination is not a directory: {destination}")

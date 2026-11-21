@@ -1,0 +1,17 @@
+{
+  "surfaces": [
+    {
+      "name": "Invoice due",
+      "checks": [
+        {"id":"LAY-05","status":"finding","evidence":"F-01 · The amount and date are separated by the same large gap as unrelated groups."},
+        {"id":"CPY-03","status":"finding","evidence":"F-02 · The pill and lead repeat the page title."},
+        {"id":"LAY-07","status":"finding","evidence":"F-02 · The pill, title and lead announce the same surface."},
+        {"id":"LAY-10","status":"finding","evidence":"F-03 · The support action precedes payment in reading and DOM order."},
+        {"id":"CPY-02","status":"finding","evidence":"F-04 · The payment button says Continue."},
+        {"id":"TYP-02","status":"pass","evidence":"Invoice title, amount, body copy and metadata use distinct roles from the type scale."},
+        {"id":"VIS-02","status":"exempt","evidence":"The green payment action uses the established primary action color."},
+        {"id":"LAY-08","status":"blocked","evidence":"The original payment dialog is unavailable in this static demo."}
+      ]
+    }
+  ]
+}

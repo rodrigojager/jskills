@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cedar Print invoice</title>
+<style>
+  :root { font:16px/1.5 system-ui,sans-serif; color:#25342b; background:#f7f6f0; color-scheme:light }
+  * { box-sizing:border-box }
+  body { margin:0 }
+  header { padding:19px 6%; border-bottom:1px solid #dddcd0; background:#fffdf8; font-weight:670 }
+  main { width:min(550px,calc(100% - 40px)); margin:40px auto }
+  article { padding:clamp(20px,5vw,34px); border:1px solid #d7d8cd; border-radius:12px; background:#fffdf8 }
+  h1 { font-size:clamp(22px,5vw,32px); margin:0; line-height:1.18 }
+  p { margin:0; color:#435448 }
+  #badge { width:fit-content; background:#e9ece1; color:#405247; padding:3px 12px; margin-bottom:14px; border-radius:100px; font-size:12px }
+  #intro { margin-top:9px }
+  #balance, #items { border-top:1px solid #e1e3d9; margin-top:20px; padding-top:16px }
+  #amount { font-size:31px; font-weight:660; margin-bottom:23px; color:#273a2d }
+  #due { margin-bottom:44px }
+  #actions { display:flex; flex-wrap:wrap; align-items:center; gap:14px }
+  #help { color:#29513e }
+  #pay { border:0; border-radius:7px; background:#235942; color:white; padding:10px 15px; font:inherit; font-weight:650 }
+  #items { font-size:.88rem }
+</style>
+<header>Cedar Print</header>
+<main>
+  <article aria-labelledby="invoice">
+    <p id="badge">Invoice overview</p>
+    <h1 id="invoice">Invoice #1048</h1>
+    <p id="intro">Review your invoice in one convenient place.</p>
+    <section id="balance" aria-label="Current balance">
+      <p id="amount">$248.00</p>
+      <p id="due">Due 12 May</p>
+      <div id="actions">
+        <a id="help" href="#items">Questions about this invoice?</a>
+        <button id="pay" type="button">Continue</button>
+      </div>
+    </section>
+    <p id="items">250 menus · Order 94217</p>
+  </article>
+</main>
+</html>
